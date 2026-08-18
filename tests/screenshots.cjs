@@ -45,6 +45,9 @@ const SCENARIOS = [
   { name: 'fx_combat', device: 'phoneLandscape', steps: 4, scenario: 'fx_combat' },
   // Opposing team: outfit variety and the carry pose at several ranges.
   { name: 'bots_squad', device: 'phoneLandscape', steps: 2, scenario: 'bots_squad' },
+  // Match layer: the storm boundary and a chest with its contents.
+  { name: 'storm_edge', device: 'phoneLandscape', steps: 2, scenario: 'storm_edge' },
+  { name: 'match_loot', device: 'phoneLandscape', steps: 2, scenario: 'match_loot' },
   // Touch control layout, in both orientations and in build mode.
   { name: 'touch_landscape', showUi: true, device: 'phoneLandscape', steps: 4, scenario: 'player_tps' },
   { name: 'touch_portrait', showUi: true, device: 'phone', steps: 4, scenario: 'player_tps' },

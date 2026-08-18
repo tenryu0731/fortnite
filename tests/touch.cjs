@@ -47,8 +47,14 @@ const reset = (page) => page.evaluate(() => {
   const G = window.__GAME;
   G.input.releaseAll();
   G.input.clearOverride();
-  // Park the bots: these tests are about the control layer, and a firefight in
-  // the background would move the player and pollute the weapon counters.
+  // A real session boots into a match, which parks the player on the battle bus
+  // and drives their position. These tests are about the control layer, so the
+  // match director, the storm and the bots are all idled: a firefight in the
+  // background would move the player and pollute the weapon counters.
+  const md = G.engine.services.peek('match');
+  if (md) { md.state = 0; if (md.busMesh) md.busMesh.visible = false; }
+  const stormSys = G.engine.services.peek('storm');
+  if (stormSys) stormSys.active = false;
   const bots = G.engine.services.peek('bots');
   if (bots) { for (const b of bots.bots) b.alive = false; bots.aliveCount = 0; }
   const p = G.engine.services.get('player');

@@ -65,11 +65,25 @@ export class CombatSystem {
     this.reloading = false;
     this.reloadTimer = 0;
 
+    // Consumables are counters with a single HEAL button rather than inventory
+    // slots. On a phone, juggling a slot to drink a potion mid-fight is pure
+    // friction; a button that picks the sensible item is what players want.
+    this.consumables = { shield: 0, medkit: 0 };
+    this.consumableMax = { shield: 3, medkit: 3 };
+    this.using = null;
+    this.useTimer = 0;
+
     this.held = new HeldWeapon(services.get('materials').vertex('character'));
     this.player.mesh.weaponSocket.add(this.held.object);
     this._syncHeld();
 
+    this.audio = services.peek('audio');
     this.registerTarget(this.player, { isPlayer: true });
+    this.bus.on('player:damaged', (e) => {
+      // Healing while being shot is not a thing; interrupting is what makes
+      // the decision to drink a real risk.
+      if (this.using && e.source && e.source.type === 'weapon') this.cancelUse('damaged');
+    });
     services.set('combat', this);
   }
 
@@ -98,6 +112,7 @@ export class CombatSystem {
     if (i === this.activeSlot) return true;
     this.activeSlot = i;
     this.cancelReload();
+    this.cancelUse('switched');
     this._syncHeld();
     this.bus.queue('inventory:selected', { slot: i, weapon: this.slots[i] });
     return true;
@@ -402,6 +417,58 @@ export class CombatSystem {
     this.bus.queue('weapon:reloadEnd', { weapon: w.id, ammo: w.ammo, reserve: this.reserveAmmo[w.def.ammo] });
   }
 
+  /* ------------------------------------------------------------------ */
+  /* consumables                                                         */
+  /* ------------------------------------------------------------------ */
+
+  addConsumable(kind, count = 1) {
+    if (!(kind in this.consumables)) return false;
+    if (this.consumables[kind] >= this.consumableMax[kind]) return false;
+    this.consumables[kind] = Math.min(this.consumableMax[kind], this.consumables[kind] + count);
+    return true;
+  }
+
+  /** What the HEAL button would use right now, or null if nothing applies. */
+  bestConsumable() {
+    const p = this.player;
+    if (this.consumables.shield > 0 && p.shield < p.maxShield) return 'shield';
+    if (this.consumables.medkit > 0 && p.health < p.maxHealth) return 'medkit';
+    return null;
+  }
+
+  beginUse(kind = null) {
+    if (this.using) return false;
+    const pick = kind || this.bestConsumable();
+    if (!pick || this.consumables[pick] <= 0) return false;
+    const def = CONSUMABLE_TIMES[pick];
+    this.using = pick;
+    this.useTimer = def.time;
+    this.bus.queue('item:useStart', { kind: pick, time: def.time });
+    return true;
+  }
+
+  /** Interrupted by firing, by taking damage, or by switching weapons. */
+  cancelUse(reason = 'cancelled') {
+    if (!this.using) return false;
+    const kind = this.using;
+    this.using = null;
+    this.useTimer = 0;
+    this.bus.queue('item:useCancel', { kind, reason });
+    return true;
+  }
+
+  _finishUse() {
+    const kind = this.using;
+    this.using = null;
+    this.useTimer = 0;
+    if (!kind || this.consumables[kind] <= 0) return;
+    this.consumables[kind]--;
+    const def = CONSUMABLE_TIMES[kind];
+    const applied = kind === 'shield' ? this.player.addShield(def.amount) : this.player.heal(def.amount);
+    this.bus.queue('item:used', { kind, applied, remaining: this.consumables[kind] });
+    if (this.audio) this.audio.play(kind === 'shield' ? 'shield' : 'pickup', { volume: 0.8, bus: 'ui' });
+  }
+
   addAmmo(type, amount) {
     if (!(type in this.reserveAmmo)) return 0;
     this.reserveAmmo[type] += amount;
@@ -429,6 +496,19 @@ export class CombatSystem {
     if (s.slot >= 0) this.selectSlot(s.slot);
     if (this.input.pressed.reload) this.beginReload();
 
+    // Consumable use: started by the HEAL button, cancelled by anything that
+    // means the player stopped healing and started fighting.
+    if (this.input.pressed.useItem) {
+      if (this.using) this.cancelUse('toggled'); else this.beginUse();
+    }
+    if (this.using) {
+      if (s.fire || this.build.active || !this.player.alive) this.cancelUse('interrupted');
+      else {
+        this.useTimer -= dt;
+        if (this.useTimer <= 0) this._finishUse();
+      }
+    }
+
     // Building takes over the fire button; the pickaxe is used through the
     // dedicated harvest button so a player can chop without swapping slots.
     if (!this.build.active && this.player.alive) {
@@ -452,6 +532,9 @@ export class CombatSystem {
       reserve: { ...this.reserveAmmo },
       reloading: this.reloading,
       reloadTimer: +this.reloadTimer.toFixed(3),
+      consumables: { ...this.consumables },
+      using: this.using,
+      useTimer: +this.useTimer.toFixed(2),
       bloom: w ? +w.bloom.toFixed(5) : 0,
       slots: this.slots.map((x) => (x ? { id: x.id, rarity: x.rarity, ammo: x.ammo === Infinity ? -1 : x.ammo } : null)),
       projectiles: this.projectiles.length,
@@ -462,6 +545,11 @@ export class CombatSystem {
 
   dispose() { this.held.dispose(); }
 }
+
+const CONSUMABLE_TIMES = {
+  shield: { time: 4.0, amount: 50 },
+  medkit: { time: 8.0, amount: 100 },
+};
 
 const _worldHit = { t: 0, point: new THREE.Vector3(), normal: new THREE.Vector3(), meta: null, handle: -1, kind: '' };
 

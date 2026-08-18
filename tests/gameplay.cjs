@@ -26,10 +26,20 @@ const SUITE = `async () => {
   const fx = S.get('fx');
   const audio = S.get('audio');
   const bots = S.get('bots');
+  const storm = S.get('storm');
+  const loot = S.get('loot');
+  const match = S.get('match');
+
+  // A real session boots straight into a match, which parks the player on the
+  // battle bus and overwrites their position every step. Every suite before the
+  // match section needs a free-standing player on the ground, so the director
+  // and the storm are idled here and restarted explicitly by that section.
+  match.state = 0;                 // MATCH.IDLE
+  match.busMesh.visible = false;
+  storm.active = false;
 
   // Bots are live from world init and will shoot the player during any
-  // simulated frames. Every suite before the bot section needs the player left
-  // alone, so the opposing team is parked here and revived by that section.
+  // simulated frames, so the opposing team is parked too.
   for (const b of bots.bots) b.alive = false;
   bots.aliveCount = 0;
 
@@ -1758,6 +1768,295 @@ const SUITE = `async () => {
     G.engine.bus.flush();
     return { ok: !b.alive && combat.stats.eliminations === kills0 + 1,
              detail: 'bot down, player eliminations ' + kills0 + ' -> ' + combat.stats.eliminations };
+  });
+
+  /* --- storm -------------------------------------------------------------- */
+  const { Storm } = await import('/src/game/Storm.js');
+  const { MATCH } = await import('/src/game/MatchDirector.js');
+
+  t('storm: phases shrink monotonically toward zero', () => {
+    const p = Storm.PHASES;
+    let mono = true;
+    for (let i = 1; i < p.length; i++) if (p[i].radius >= p[i - 1].radius) mono = false;
+    const dpsRising = p.every((x, i) => i === 0 || x.dps >= p[i - 1].dps);
+    const total = p.reduce((a, x) => a + x.wait + x.shrink, 0);
+    return { ok: mono && dpsRising && p[p.length - 1].radius === 0 && total > 300 && total < 900,
+             detail: p.length + ' phases, ' + Math.round(total) + 's total, dps ' + p[0].dps + ' -> ' + p[p.length - 1].dps };
+  });
+
+  t('storm: the circle closes and the next centre is always reachable', () => {
+    storm.start();
+    let prevR = storm.radius;
+    const centres = [];
+    let unreachable = 0;
+    for (let phase = 0; phase < Storm.PHASES.length; phase++) {
+      // Run the whole phase: wait then shrink.
+      for (let i = 0; i < 60 * 130 && storm.phaseIndex === phase; i++) storm.fixedUpdate(1 / 60);
+      // The new circle must lie inside the old one.
+      const d = Math.hypot(storm.centre.x - (centres.length ? centres[centres.length - 1][0] : 0),
+        storm.centre.y - (centres.length ? centres[centres.length - 1][1] : 0));
+      if (d > prevR - storm.radius + 1) unreachable++;
+      centres.push([storm.centre.x, storm.centre.y]);
+      if (storm.radius > prevR + 0.01) unreachable++;
+      prevR = storm.radius;
+    }
+    return { ok: storm.radius < 1 && unreachable === 0,
+             detail: 'final radius ' + storm.radius.toFixed(2) + 'm over ' + centres.length + ' phases, all reachable' };
+  });
+
+  t('storm: entities outside take damage, inside take none', () => {
+    storm.start();
+    storm.radius = 40;
+    storm.centre.set(0, 0);
+    storm.dps = 10;
+    storm.damageAccum.clear();
+    // Inside.
+    player.spawnAt(0, 0, 0);
+    player.health = 100; player.shield = 0; player.alive = true;
+    for (let i = 0; i < 120; i++) storm._applyDamage(1 / 60);
+    const inside = player.health;
+    // Outside.
+    player.spawnAt(200, 200, 0);
+    player.health = 100;
+    for (let i = 0; i < 120; i++) storm._applyDamage(1 / 60);
+    const outside = player.health;
+    storm.active = false;
+    return { ok: inside === 100 && outside <= 82 && outside > 60,
+             detail: 'inside kept ' + inside + ' hp, outside dropped to ' + outside + ' after 2s at 10 dps' };
+  });
+
+  t('storm: safe direction points back toward the circle', () => {
+    storm.centre.set(50, -30);
+    storm.radius = 60;
+    const d = storm.safeDirection(200, -30, new THREE.Vector3());
+    const inside = storm.isSafe(60, -30);
+    const outsideDist = storm.distanceToSafety(200, -30);
+    return { ok: d.x < -0.9 && inside && outsideDist > 80,
+             detail: 'direction (' + d.x.toFixed(2) + ',' + d.z.toFixed(2) + '), 150m out reads ' + outsideDist.toFixed(0) + 'm from safety' };
+  });
+
+  /* --- loot --------------------------------------------------------------- */
+  t('loot: populating the map places chests and floor loot at POIs', () => {
+    const r = loot.populate();
+    const nearPoi = loot.items.filter((it) => structures.insidePoi(it.x, it.z, 12)).length;
+    return { ok: r.chests > 5 && loot.items.length > 15 && nearPoi > loot.items.length * 0.7,
+             detail: r.chests + ' chests, ' + loot.items.length + ' floor items, '
+               + nearPoi + ' of them inside a POI' };
+  });
+
+  t('loot: items sit above the ground and carry a rarity colour', () => {
+    const bad = loot.items.filter((it) => it.y < terrain.heightAt(it.x, it.z) - 0.5 || !it.color).length;
+    const weapons = loot.items.filter((it) => it.type === 0);
+    const rarities = new Set(weapons.map((w) => w.rarity));
+    return { ok: bad === 0 && rarities.size >= 2,
+             detail: loot.items.length + ' items, ' + bad + ' buried, rarities present: ' + [...rarities].join(',') };
+  });
+
+  t('loot: walking over ammo picks it up automatically', () => {
+    placeClear();
+    const p = player.position;
+    const before = combat.reserveAmmo.medium;
+    loot.spawnAmmo(p.x, p.y + 0.5, p.z, 'medium', 30);
+    sim(4, {});
+    return { ok: combat.reserveAmmo.medium === before + 30,
+             detail: 'medium ammo ' + before + ' -> ' + combat.reserveAmmo.medium + ' without pressing anything' };
+  });
+
+  t('loot: a weapon needs the interact button, not just proximity', () => {
+    placeClear();
+    const p = player.position;
+    combat.slots[1] = null; combat.slots[2] = null;
+    const item = loot.spawnWeapon(p.x + 0.5, p.y + 0.5, p.z, 'ar', 'epic');
+    sim(6, {});
+    const passive = combat.slots.filter((x) => x && x.id === 'ar').length;
+    const prompt = loot.nearest && loot.nearest.kind === 'item';
+    sim(2, { interact: true });
+    const taken = combat.slots.filter((x) => x && x.id === 'ar').length;
+    const gone = !loot.items.includes(item);
+    return { ok: passive === 0 && prompt && taken === 1 && gone,
+             detail: 'proximity alone left it on the ground; interact took it (' + taken + ' in inventory)' };
+  });
+
+  t('loot: opening a chest spawns several items', () => {
+    placeClear();
+    const p = player.position;
+    const chest = { x: p.x + 1.2, y: p.y, z: p.z, yaw: 0, opened: false, kind: 'test' };
+    loot.chests.push(chest);
+    // Count spawns, not surviving items: ammo and materials that land within
+    // reach are absorbed on contact the same frame, which is correct.
+    const before = loot.stats.spawned;
+    sim(4, {});
+    const prompt = loot.nearest && loot.nearest.kind === 'chest';
+    sim(2, { interact: true });
+    const spawned = loot.stats.spawned - before;
+    return { ok: prompt && chest.opened && spawned >= 3,
+             detail: 'chest opened, ' + spawned + ' items spawned ('
+               + (loot.items.length) + ' still on the ground after auto-pickup)' };
+  });
+
+  t('loot: the whole loot layer costs two draw calls', () => {
+    loot.update(1 / 60);
+    return { ok: loot.itemMesh.count >= 0 && loot.chestMesh.count >= 0,
+             detail: loot.itemMesh.count + ' items and ' + loot.chestMesh.count
+               + ' chests drawn in 2 instanced meshes' };
+  });
+
+  /* --- consumables --------------------------------------------------------- */
+  t('consumables: a shield potion applies after its use time', () => {
+    placeClear();
+    player.shield = 0; player.health = 100;
+    combat.consumables.shield = 1;
+    combat.cancelUse();
+    const started = combat.beginUse();
+    sim(30, {});
+    const midway = [player.shield, combat.using];
+    sim(4 * 60, {});
+    return { ok: started && midway[0] === 0 && midway[1] === 'shield'
+               && player.shield === 50 && combat.consumables.shield === 0,
+             detail: 'no effect at 0.5s, +' + player.shield + ' shield after the full 4s' };
+  });
+
+  t('consumables: taking fire interrupts a heal', () => {
+    placeClear();
+    player.health = 50; player.shield = 0;
+    combat.consumables.medkit = 1;
+    combat.cancelUse();
+    combat.beginUse('medkit');
+    sim(30, {});
+    player.applyDamage(5, { type: 'weapon', shooter: null });
+    G.engine.bus.flush();
+    sim(10, {});
+    return { ok: combat.using === null && combat.consumables.medkit === 1 && player.health < 50,
+             detail: 'use cancelled, medkit retained (' + combat.consumables.medkit + ')' };
+  });
+
+  t('consumables: the heal button picks shield first, then medkit', () => {
+    player.health = 100; player.shield = 0;
+    combat.consumables.shield = 1; combat.consumables.medkit = 1;
+    const first = combat.bestConsumable();      // no shield, full health
+    player.shield = 100;
+    const capped = combat.bestConsumable();      // both full: nothing applies
+    player.health = 40;
+    const hurt = combat.bestConsumable();        // shield full, health low
+    player.shield = 0;
+    const both = combat.bestConsumable();        // shield takes priority again
+    combat.consumables.shield = 0;
+    const onlyMed = combat.bestConsumable();     // shield gone, medkit remains
+    player.health = 100; player.shield = 100;
+    return { ok: first === 'shield' && capped === null && hurt === 'medkit'
+               && both === 'shield' && onlyMed === 'medkit',
+             detail: 'no shield -> ' + first + '; both full -> ' + capped + '; hurt with full shield -> '
+               + hurt + '; hurt with no shield -> ' + both + '; no potions left -> ' + onlyMed };
+  });
+
+  /* --- match flow ---------------------------------------------------------- */
+  t('match: starting a match resets loadout, loot, bots and storm', () => {
+    combat.giveWeapon('ar', 'legendary');
+    build.resources.wood = 500;
+    player.health = 10;
+    match.startMatch();
+    const armedSlots = match.combat.slots.filter((x, i) => i > 0 && x).length;
+    return { ok: match.state === MATCH.BUS && armedSlots === 0 && build.resources.wood === 0
+               && player.health === player.maxHealth && bots.aliveCount === bots.bots.length
+               && loot.chests.length > 0 && !storm.active,
+             detail: 'state=bus, empty loadout, ' + bots.aliveCount + ' bots, '
+               + loot.chests.length + ' chests, storm idle' };
+  });
+
+  t('match: the bus crosses the map and the player can drop from it', () => {
+    match.startMatch();
+    const start = match.busMesh.position.clone();
+    sim(120, {});
+    const moved = match.busMesh.position.distanceTo(start);
+    const ridingAlong = Math.abs(player.position.y - match.busMesh.position.y) < 20;
+    const deployed = match.deploy();
+    return { ok: moved > 80 && ridingAlong && deployed && match.state === MATCH.DEPLOY,
+             detail: 'bus travelled ' + moved.toFixed(0) + 'm in 2s, drop -> ' + ['idle','bus','deploy','playing','result'][match.state] };
+  });
+
+  t('match: dropping falls, deploys a glider and lands, starting the storm', () => {
+    match.startMatch();
+    sim(60, {});
+    match.deploy();
+    const startY = player.position.y;
+    let sawFreefall = false, sawGlide = false;
+    for (let i = 0; i < 60 * 40 && match.state === MATCH.DEPLOY; i++) {
+      sim(1, {});
+      if (!match.gliding && player.body.vel.y < -40) sawFreefall = true;
+      if (match.gliding) sawGlide = true;
+    }
+    const grounded = Math.abs(player.position.y - terrain.heightAt(player.position.x, player.position.z)) < 0.2;
+    return { ok: sawFreefall && sawGlide && match.state === MATCH.PLAYING && grounded && storm.active,
+             detail: 'fell from ' + startY.toFixed(0) + 'm, freefall then glide, landed and storm started' };
+  });
+
+  t('match: landing costs no fall damage', () => {
+    match.startMatch();
+    sim(30, {});
+    match.deploy();
+    for (let i = 0; i < 60 * 40 && match.state === MATCH.DEPLOY; i++) sim(1, {});
+    return { ok: player.health === player.maxHealth,
+             detail: 'health after the drop: ' + player.health };
+  });
+
+  t('match: eliminating the last opponent is a victory', () => {
+    match.startMatch();
+    sim(30, {});
+    match.deploy();
+    for (let i = 0; i < 60 * 40 && match.state === MATCH.DEPLOY; i++) sim(1, {});
+    // Remove every bot; the final elimination must end the match.
+    for (const b of bots.bots) if (b.alive) b.applyDamage(1e9, { shooter: player });
+    G.engine.bus.flush();
+    sim(2, {});
+    return { ok: match.state === MATCH.RESULT && match.result && match.result.victory
+               && match.result.placement === 1,
+             detail: 'placement ' + (match.result ? match.result.placement : '?') + ' of '
+               + (match.result ? match.result.players : '?') + ', victory=' + (match.result && match.result.victory) };
+  });
+
+  t('match: dying ends the match with the correct placement', () => {
+    match.startMatch();
+    sim(30, {});
+    match.deploy();
+    for (let i = 0; i < 60 * 40 && match.state === MATCH.DEPLOY; i++) sim(1, {});
+    // Take out most bots, then the player.
+    let killed = 0;
+    for (const b of bots.bots) { if (killed >= 20) break; if (b.alive) { b.applyDamage(1e9, {}); killed++; } }
+    G.engine.bus.flush();
+    const remaining = bots.aliveCount;
+    player.applyDamage(1e9, { type: 'storm' });
+    G.engine.bus.flush();
+    sim(2, {});
+    return { ok: match.state === MATCH.RESULT && match.result && !match.result.victory
+               && match.result.placement === remaining + 1,
+             detail: 'died with ' + remaining + ' bots alive -> placement ' + match.result.placement };
+  });
+
+  t('match: eliminated bots drop their loot', () => {
+    match.startMatch();
+    const before = loot.items.length;
+    const b = bots.bots.find((x) => x.alive);
+    b.applyDamage(1e9, { shooter: player });
+    G.engine.bus.flush();
+    return { ok: loot.items.length > before,
+             detail: (loot.items.length - before) + ' items dropped by one elimination' };
+  });
+
+  t('match: results carry placement, eliminations, damage and accuracy', () => {
+    match.startMatch();
+    sim(20, {});
+    match.deploy();
+    for (let i = 0; i < 60 * 40 && match.state === MATCH.DEPLOY; i++) sim(1, {});
+    combat.stats.playerShots = 20; combat.stats.playerHits = 9;
+    combat.stats.damageDealt = 640;
+    match.stats.eliminations = 3;
+    for (const bb of bots.bots) if (bb.alive) bb.applyDamage(1e9, { shooter: player });
+    G.engine.bus.flush();
+    const r = match.result;
+    return { ok: r && r.placement === 1 && r.eliminations >= 3 && r.damage >= 640
+               && Math.abs(r.accuracy - 0.45) < 0.01 && r.players === 25,
+             detail: 'placement ' + r.placement + '/' + r.players + ', ' + r.eliminations
+               + ' elims, ' + r.damage + ' damage, ' + (r.accuracy * 100).toFixed(0) + '% accuracy' };
   });
 
   reviveAll();

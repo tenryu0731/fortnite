@@ -19,6 +19,9 @@ import { BuildSystem } from './build/BuildSystem.js';
 import { CombatSystem } from './combat/CombatSystem.js';
 import { FxSystem } from './fx/FxSystem.js';
 import { BotManager } from './ai/BotManager.js';
+import { Storm } from './game/Storm.js';
+import { Loot } from './game/Loot.js';
+import { MatchDirector } from './game/MatchDirector.js';
 import { AudioSystem } from './audio/AudioSystem.js';
 import { makeWeapon as makeWeaponFor } from './combat/Weapons.js';
 
@@ -74,7 +77,10 @@ async function boot() {
   engine.register('audio', new AudioSystem());
   engine.register('combat', new CombatSystem(opts.seed));
   engine.register('bots', new BotManager(opts.seed, { count: 24 }));
+  engine.register('storm', new Storm(opts.seed, { mapRadius: 430 }));
+  engine.register('loot', new Loot(opts.seed));
   engine.register('fx', new FxSystem(opts.seed));
+  engine.register('match', new MatchDirector(opts.seed));
   engine.register('cameraRig', new CameraRig());
 
   /**
@@ -121,6 +127,8 @@ async function boot() {
     build_grid: () => null,
     fx_combat: () => null,
     bots_squad: () => null,
+    storm_edge: () => null,
+    match_loot: () => null,
     terrain_coast: () => {
       const t = engine.services.get('terrain');
       // Walk outward from the centre until the ground drops below sea level.
@@ -133,6 +141,30 @@ async function boot() {
       return { pos: [bx, y + 14, bz], look: [bx * 1.6, 0, bz * 1.6] };
     },
   };
+
+  /**
+   * Flat, unobstructed ground for scenarios that need a clear stage. Picking a
+   * point by coordinates alone can land against a boulder or on a shoreline,
+   * which makes a capture depend on terrain luck.
+   */
+  function findClearGround(startX, startZ) {
+    const t = engine.services.get('terrain');
+    const st = engine.services.peek('structures');
+    const col = engine.services.get('colliders');
+    const out = [];
+    for (let i = 0; i < 600; i++) {
+      const a = i * 2.399, rad = i * 1.3;
+      const x = startX + Math.cos(a) * rad, z = startZ + Math.sin(a) * rad;
+      if (!t.isInsideMap(x, z)) continue;
+      const h = t.heightAt(x, z);
+      if (h < 6) continue;
+      if (t.slopeAt(x, z) < 0.985) continue;
+      if (st && st.insidePoi(x, z, 26)) continue;
+      if (col.query(x - 9, h - 2, z - 9, x + 9, h + 8, z + 9, out)) continue;
+      return { x, y: h, z };
+    }
+    return { x: startX, y: t.heightAt(startX, startZ), z: startZ };
+  }
 
   function applyScenario(name) {
     const fn = SCENARIOS[name];
@@ -292,6 +324,82 @@ async function boot() {
       return true;
     }
 
+    // Storm scenario: stand just inside the wall looking out at it.
+    if (name === 'storm_edge') {
+      const t = engine.services.get('terrain');
+      const player = engine.services.get('player');
+      const st = engine.services.get('storm');
+      const rig = engine.services.get('cameraRig');
+      const r = makeRoot(opts.seed).stream('scenario');
+      const g = t.findGround(-40, 40, r);
+
+      st.start();
+      st.centre.set(g.x, g.z);
+      st.radius = 70;
+      st.dps = 4;
+      st.update(0.016);
+
+      // Stand 12m inside the boundary, facing straight out at the wall.
+      const bearing = 0.9;
+      const px = g.x + Math.cos(bearing) * (st.radius - 12);
+      const pz = g.z + Math.sin(bearing) * (st.radius - 12);
+      player.spawnAt(px, pz, 0);
+      player.yaw = Math.atan2(-Math.cos(bearing), -Math.sin(bearing));
+      player.pitch = 0.04;
+      rig.enabled = true;
+      rig.occlusion = 1;
+      for (let i = 0; i < 120; i++) rig.update(1 / 60);
+      t.updateLods(true); t.flushQueue(t.chunks.length); t.updateLods(false);
+      engine.services.get('vegetation').repack(true);
+      engine.services.get('vegetation').repackGrass(true);
+      engine.services.get('sky').update();
+      for (let i = 0; i < 10; i++) rig.update(1 / 60);
+      return true;
+    }
+
+    // Loot scenario: a chest surrounded by its contents, at pickup range.
+    if (name === 'match_loot') {
+      const t = engine.services.get('terrain');
+      const player = engine.services.get('player');
+      const lootSys = engine.services.get('loot');
+      const rig = engine.services.get('cameraRig');
+      const g = findClearGround(80, -140);
+
+      lootSys.items.length = 0;
+      lootSys.chests.length = 0;
+      const chest = { x: g.x, y: g.y, z: g.z, yaw: 0.4, opened: false, kind: 'scenario' };
+      lootSys.chests.push(chest);
+      // One of each item type, laid out in a ring so all are visible.
+      const ring = [
+        () => lootSys.spawnWeapon(g.x + 1.8, g.y + 0.5, g.z - 0.4, 'ar', 'legendary'),
+        () => lootSys.spawnWeapon(g.x - 1.8, g.y + 0.5, g.z + 0.5, 'shotgun', 'epic'),
+        () => lootSys.spawnWeapon(g.x + 0.3, g.y + 0.5, g.z + 2.0, 'sniper', 'rare'),
+        () => lootSys.spawnConsumable(g.x - 1.2, g.y + 0.5, g.z - 1.6, 'shield', 2),
+        () => lootSys.spawnConsumable(g.x + 2.4, g.y + 0.5, g.z + 1.6, 'medkit', 1),
+        () => lootSys.spawnAmmo(g.x - 2.6, g.y + 0.5, g.z - 0.2, 'medium', 30),
+        () => lootSys.spawnMaterial(g.x + 1.0, g.y + 0.5, g.z - 2.2, 'metal', 60),
+      ];
+      for (const f of ring) f();
+      lootSys.update(0.4);
+
+      // Park the player behind the camera: this capture is about the loot.
+      player.spawnAt(g.x + 5.5, g.z - 9.5, 0);
+      player.yaw = 0.6;
+      player.pitch = -0.25;
+      // Frame the pile directly rather than through the rig: this capture is
+      // about the loot's readability, not about camera behaviour.
+      rig.enabled = false;
+      engine.camera.position.set(g.x + 2.6, g.y + 2.9, g.z - 5.4);
+      engine.camera.lookAt(g.x, g.y + 0.45, g.z);
+      engine.camera.updateMatrixWorld(true);
+      t.updateLods(true); t.flushQueue(t.chunks.length); t.updateLods(false);
+      engine.services.get('vegetation').repack(true);
+      engine.services.get('vegetation').repackGrass(true);
+      engine.services.get('sky').update();
+      lootSys.update(0.4);
+      return true;
+    }
+
     // Rig-driven scenarios: place the player, then let CameraRig settle.
     if (name === 'player_tps' || name === 'player_ads') {
       const t = engine.services.get('terrain');
@@ -367,6 +475,9 @@ async function boot() {
         build: engine.services.get('build').state(),
         combat: engine.services.get('combat').state(),
         bots: engine.services.get('bots').state(),
+        storm: engine.services.get('storm').snapshot(),
+        loot: engine.services.get('loot').state(),
+        match: engine.services.get('match').snapshot(),
         fx: engine.services.get('fx').state(),
         audio: engine.services.get('audio').state(),
         terrain: { ...t.stats, maxHeight: +t.field.maxHeight.toFixed(2) },
@@ -412,6 +523,8 @@ async function boot() {
       teleport: (x, z, yOff = 0) => engine.services.get('player').spawnAt(x, z, yOff).toArray(),
       setUiVisible: (v) => { engine.services.get('touch').setVisible(v); },
       setYaw: (y) => { engine.services.get('player').yaw = y; },
+      startMatch: () => engine.services.get('match').startMatch(),
+      deploy: () => engine.services.get('match').deploy(),
       setPitch: (p) => { engine.services.get('player').pitch = p; },
     },
   };
@@ -423,10 +536,17 @@ async function boot() {
     const t = engine.services.get('terrain');
     const eye = t.findGround(40, 60, rng);
     // Stand at eye height until the player controller takes over the camera.
-    engine.services.get('bots').spawnAll();
     const player = engine.services.get('player');
     player.spawnAt(eye.x, eye.z, 0.2);
     player.yaw = Math.PI * 0.25;
+    // Scenario captures need a populated, non-running world; a real session
+    // starts a match instead.
+    if (opts.scenario) {
+      engine.services.get('bots').spawnAll();
+      engine.services.get('loot').populate();
+    } else {
+      engine.services.get('match').startMatch();
+    }
     engine.services.get('cameraRig').update(0.016);
     if (opts.scenario && SCENARIOS[opts.scenario]) applyScenario(opts.scenario);
     engine.start();
