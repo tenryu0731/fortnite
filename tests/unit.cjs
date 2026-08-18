@@ -31,27 +31,26 @@ function staticChecks() {
   const files = walk(path.join(ROOT, 'src'));
 
   // Determinism: every random draw must come from a seeded Rng.
-  const offenders = [];
-  for (const f of files) {
-    const src = stripComments(fs.readFileSync(f, 'utf8'));
-    src.split('\n').forEach((line, i) => {
-      if (/Math\.random\s*\(/.test(line) && !/allow-math-random/.test(line)) {
-        offenders.push(`${path.relative(ROOT, f)}:${i + 1}`);
-      }
+  // Scan comment-stripped source for the banned call, but look for the opt-out
+  // marker in the original line — the marker lives in a comment, which
+  // stripping would otherwise remove along with it.
+  const scan = (f, re, marker, out) => {
+    const raw = fs.readFileSync(f, 'utf8').split('\n');
+    const clean = stripComments(raw.join('\n')).split('\n');
+    clean.forEach((line, i) => {
+      if (re.test(line) && !marker.test(raw[i] || '')) out.push(`${path.relative(ROOT, f)}:${i + 1}`);
     });
-  }
+  };
+
+  const offenders = [];
+  for (const f of files) scan(f, /Math\.random\s*\(/, /allow-math-random/, offenders);
   ok = check('no global Math.random() in src/', offenders.length === 0, offenders.join(', ')) && ok;
 
   // Date.now()/performance.now() inside fixedUpdate would break determinism too.
   const timeOffenders = [];
   for (const f of files) {
     if (/Profiler|Engine|AudioSystem|Hud|Screens|TestApi|Settings/.test(path.basename(f))) continue;
-    const src = stripComments(fs.readFileSync(f, 'utf8'));
-    src.split('\n').forEach((line, i) => {
-      if (/\bDate\.now\s*\(|\bperformance\.now\s*\(/.test(line) && !/allow-wallclock/.test(line)) {
-        timeOffenders.push(`${path.relative(ROOT, f)}:${i + 1}`);
-      }
-    });
+    scan(f, /\bDate\.now\s*\(|\bperformance\.now\s*\(/, /allow-wallclock/, timeOffenders);
   }
   ok = check('no wall-clock reads in simulation code', timeOffenders.length === 0, timeOffenders.join(', ')) && ok;
 

@@ -11,7 +11,14 @@ const { PNG } = require('pngjs');
 const pixelmatch = require('pixelmatch');
 const { startServer, launch, openGame, OUT, BASELINE, ensureDirs, check, fmt } = require('./harness.cjs');
 
-// Threshold from ARCHITECTURE.md §11.3
+// Threshold from ARCHITECTURE.md 11.3.
+//
+// Measured noise floor: scenes made only of large flat surfaces reproduce
+// bit-exactly (0.0000%), but frames containing the character, shadow-map edges
+// or DOM text vary by up to ~0.08% between runs — SwiftShader's multithreaded
+// rasteriser and font rasterisation are not bit-reproducible across processes.
+// 0.30% keeps roughly 4x margin over that floor while still catching any real
+// visual change, which always moves far more than a handful of edge pixels.
 const DIFF_PIXEL_THRESHOLD = 0.1;
 const MAX_DIFF_RATIO = 0.003; // 0.30%
 
@@ -32,19 +39,39 @@ const SCENARIOS = [
   // Player: default third-person framing and the aim-down-sights rig.
   { name: 'player_tps', device: 'phoneLandscape', steps: 4, scenario: 'player_tps' },
   { name: 'player_ads', device: 'phoneLandscape', steps: 4, scenario: 'player_ads' },
+  // Touch control layout, in both orientations and in build mode.
+  { name: 'touch_landscape', showUi: true, device: 'phoneLandscape', steps: 4, scenario: 'player_tps' },
+  { name: 'touch_portrait', showUi: true, device: 'phone', steps: 4, scenario: 'player_tps' },
+  { name: 'touch_build', showUi: true, device: 'phoneLandscape', steps: 4, scenario: 'player_tps',
+    after: (page) => page.evaluate(() => {
+      const t = window.__GAME.engine.services.get('touch');
+      t.setBuildMode(true);
+      t.setButtonVisible('interact', true);
+      t.setActivePiece(2);
+    }) },
 ];
 
 async function capture(page, scn, file) {
+  // Only plain data may cross into the page; `after` is a Node-side callback.
+  const cfg = {
+    scenario: scn.scenario || null, steps: scn.steps || 30, options: scn.options || {},
+    // World and camera scenarios hide the control layer so a change to the 3D
+    // render is not masked by, or confused with, a change to the HUD; the
+    // touch_* scenarios are the ones that cover the controls themselves.
+    showUi: !!scn.showUi,
+  };
   await page.evaluate((s) => {
     window.__GAME.deterministic(true);
+    // The gallery scene boots without the game's UI layer at all.
+    if (window.__GAME.debug && window.__GAME.debug.setUiVisible) window.__GAME.debug.setUiVisible(s.showUi);
     if (s.scenario) window.__GAME.scenario(s.scenario, s.options || {});
-    if (s.deterministicCamera === false) return;
-  }, scn);
+  }, cfg);
   // Advance a fixed number of simulation steps, then settle the frame.
-  await page.evaluate((s) => { window.__GAME.step(s.steps || 30); }, scn);
+  await page.evaluate((s) => { window.__GAME.step(s.steps); }, cfg);
   if (scn.camera) await page.evaluate((c) => window.__GAME.setCamera(c), scn.camera);
   // Re-apply after stepping so streaming systems settle at the final pose.
   if (scn.scenario) await page.evaluate((s) => window.__GAME.scenario(s), scn.scenario);
+  if (scn.after) await scn.after(page);
   await page.evaluate(() => { window.__GAME.renderOnly(2); });
   await page.screenshot({ path: file, animations: 'disabled', caret: 'hide' });
 }

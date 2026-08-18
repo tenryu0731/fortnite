@@ -11,6 +11,7 @@ import { Structures } from './world/Structures.js';
 import { Physics } from './sim/Physics.js';
 import { InputHub } from './input/InputState.js';
 import { DesktopInput } from './input/DesktopInput.js';
+import { TouchInput } from './input/TouchInput.js';
 import { PlayerController } from './player/PlayerController.js';
 import { CameraRig } from './player/CameraRig.js';
 
@@ -58,6 +59,8 @@ async function boot() {
 
   const input = new InputHub();
   input.addSource(new DesktopInput(input, canvas, settings));
+  const touch = input.addSource(new TouchInput(input, document.getElementById('ui-root'), settings));
+  engine.services.set('touch', touch);
   engine.register('input', input);
   engine.register('player', new PlayerController({ seed: opts.seed }));
   engine.register('cameraRig', new CameraRig());
@@ -192,11 +195,37 @@ async function boot() {
       override: (partial) => engine.services.get('input').override(partial),
       clearOverride: () => engine.services.get('input').clearOverride(),
       state: () => JSON.parse(JSON.stringify(engine.services.get('input').state)),
+      raw: () => JSON.parse(JSON.stringify(engine.services.get('input').raw)),
+      pressed: () => ({ ...engine.services.get('input').pressed }),
+      touch: () => engine.services.get('touch').debugState(),
+      touchRects: () => {
+        const t = engine.services.get('touch');
+        const out = {};
+        for (const [id, el] of t.buttonEls) {
+          const r = el.getBoundingClientRect();
+          out[id] = { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height,
+            hidden: el.classList.contains('hidden') };
+        }
+        t.slotEls.forEach((el, i) => {
+          const r = el.getBoundingClientRect();
+          out['slot' + i] = { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height,
+            hidden: el.offsetParent === null };
+        });
+        t.pieceEls.forEach((el, i) => {
+          const r = el.getBoundingClientRect();
+          out['piece' + i] = { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height,
+            hidden: el.offsetParent === null };
+        });
+        out._viewport = { w: window.innerWidth, h: window.innerHeight };
+        return out;
+      },
+      releaseAll: () => engine.services.get('touch').releaseAll(),
     },
     debug: {
       heightAt: (x, z) => engine.services.get('terrain').heightAt(x, z),
       biomeAt: (x, z) => engine.services.get('terrain').biomeAt(x, z),
       teleport: (x, z, yOff = 0) => engine.services.get('player').spawnAt(x, z, yOff).toArray(),
+      setUiVisible: (v) => { engine.services.get('touch').setVisible(v); },
       setYaw: (y) => { engine.services.get('player').yaw = y; },
       setPitch: (p) => { engine.services.get('player').pitch = p; },
     },
