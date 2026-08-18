@@ -14,6 +14,7 @@ import { DesktopInput } from './input/DesktopInput.js';
 import { TouchInput } from './input/TouchInput.js';
 import { PlayerController } from './player/PlayerController.js';
 import { CameraRig } from './player/CameraRig.js';
+import { BuildSystem } from './build/BuildSystem.js';
 
 /** Query-string overrides let the harness pin seed/quality/scenario per run. */
 function queryOverrides() {
@@ -63,6 +64,7 @@ async function boot() {
   engine.services.set('touch', touch);
   engine.register('input', input);
   engine.register('player', new PlayerController({ seed: opts.seed }));
+  engine.register('build', new BuildSystem());
   engine.register('cameraRig', new CameraRig());
 
   /**
@@ -106,6 +108,7 @@ async function boot() {
     // a fixed pose, so the rig itself is covered by visual regression.
     player_tps: () => null,
     player_ads: () => null,
+    build_grid: () => null,
     terrain_coast: () => {
       const t = engine.services.get('terrain');
       // Walk outward from the centre until the ground drops below sea level.
@@ -122,6 +125,60 @@ async function boot() {
   function applyScenario(name) {
     const fn = SCENARIOS[name];
     if (!fn) return false;
+
+    // Build scenario: raise a small fort so the frame covers every piece type,
+    // grid alignment, the three material tints and the live ghost preview.
+    if (name === 'build_grid') {
+      const t = engine.services.get('terrain');
+      const player = engine.services.get('player');
+      const bld = engine.services.get('build');
+      const rig = engine.services.get('cameraRig');
+      const r = makeRoot(opts.seed).stream('scenario');
+      const g = t.findGround(-60, 120, r);
+      bld.resources.wood = 500; bld.resources.brick = 500; bld.resources.metal = 500;
+      bld.active = true;
+
+      const place = (piece, material, yaw, pitch) => {
+        bld.setPiece(piece);
+        bld.setMaterial(material);
+        player.yaw = yaw; player.pitch = pitch;
+        bld.computeTarget();
+        return bld.place();
+      };
+
+      player.spawnAt(g.x, g.z, 0);
+      engine.stepSim(4);
+
+      // Three walls around the player, each on a different cell boundary.
+      place(0, 'brick', 0, -0.12);
+      place(0, 'wood', Math.PI / 2, -0.12);
+      place(0, 'metal', -Math.PI / 2, -0.12);
+      // A floor under the feet, a ramp leading out, and a cone capping a wall.
+      place(1, 'wood', 0, -1.35);
+      place(2, 'wood', Math.PI, -0.55);
+      place(3, 'brick', 0, 0.12);
+
+      // Freeze health at full so the capture does not depend on ramp timing.
+      for (const rec of bld.pending) rec.meta.hp = rec.meta.maxHp;
+      bld.pending.length = 0;
+
+      // Leave a ghost preview on screen, aimed at an empty boundary.
+      bld.setPiece(0);
+      bld.setMaterial('metal');
+      player.yaw = Math.PI; player.pitch = -0.12;
+      bld.computeTarget();
+      bld.update(1 / 60);
+
+      engine.camera.position.set(g.x + 12, g.y + 6.5, g.z + 12);
+      engine.camera.lookAt(g.x, g.y + 2.0, g.z);
+      engine.camera.updateMatrixWorld(true);
+      rig.enabled = false;
+      t.updateLods(true); t.flushQueue(t.chunks.length); t.updateLods(false);
+      engine.services.get('vegetation').repack(true);
+      engine.services.get('vegetation').repackGrass(true);
+      engine.services.get('sky').update();
+      return true;
+    }
 
     // Rig-driven scenarios: place the player, then let CameraRig settle.
     if (name === 'player_tps' || name === 'player_ads') {
@@ -184,6 +241,7 @@ async function boot() {
         time: engine.time,
         camera: engine.camera.position.toArray().map((n) => +n.toFixed(3)),
         player: engine.services.get('player').state(),
+        build: engine.services.get('build').state(),
         terrain: { ...t.stats, maxHeight: +t.field.maxHeight.toFixed(2) },
         vegetation: { ...v.stats },
         structures: { ...engine.services.get('structures').stats,

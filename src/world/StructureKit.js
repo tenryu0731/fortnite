@@ -160,6 +160,34 @@ const PROTOS = {
     return shadePanel(g, MODULE * 0.5);
   },
 
+  /**
+   * Pyramid roof piece. A four-segment cone whose square base spans one module
+   * once rotated a quarter turn, so it caps a cell exactly.
+   */
+  cone() {
+    const r = MODULE / 2 * Math.SQRT2;
+    const g = new THREE.ConeGeometry(r, MODULE * 0.5, 4, 1, false);
+    g.rotateY(Math.PI / 4);
+    g.translate(0, MODULE * 0.25, 0);
+    const n = g.getAttribute('position').count;
+    g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+    return shadePanel(g, MODULE * 0.5);
+  },
+
+  /** Half-height wall — the result of editing the top out of a wall. */
+  wallHalf() {
+    const g = panelBox(MODULE, MODULE / 2, WALL_T);
+    g.translate(0, MODULE / 4, 0);
+    return shadePanel(g, MODULE / 2);
+  },
+
+  /** Half-width wall, left side kept — an edit preset for peeking. */
+  wallHalfSide() {
+    const g = panelBox(MODULE / 2, MODULE, WALL_T);
+    g.translate(-MODULE / 4, MODULE / 2, 0);
+    return shadePanel(g);
+  },
+
   /** Supply crate prop. */
   crate() {
     const g = MeshGen.roundedBox(1.15, 1.15, 1.15, 0.06, 2);
@@ -205,11 +233,22 @@ function stairBoxes() {
 
 const SHAPES = {
   stair: stairBoxes(),
+  // A pyramid roof is walkable in this genre, so it is approximated by three
+  // stacked slabs rather than one box: a single box would let a player stand in
+  // mid-air at the pyramid's corners.
+  cone: [
+    { cx: 0, cy: MODULE * 0.0833, cz: 0, hx: MODULE / 2, hy: MODULE * 0.0833, hz: MODULE / 2 },
+    { cx: 0, cy: MODULE * 0.25, cz: 0, hx: MODULE / 3, hy: MODULE * 0.0833, hz: MODULE / 3 },
+    { cx: 0, cy: MODULE * 0.4167, cz: 0, hx: MODULE / 6, hy: MODULE * 0.0833, hz: MODULE / 6 },
+  ],
 };
 
 /** Overall footprint per prototype, used when no explicit shape is given. */
 const BOUNDS = {
   wall: [MODULE, MODULE, WALL_T],
+  cone: [MODULE, MODULE * 0.5, MODULE],
+  wallHalf: [MODULE, MODULE / 2, WALL_T],
+  wallHalfSide: [MODULE / 2, MODULE, WALL_T],
   wallWindow: [MODULE, MODULE, WALL_T],
   wallDoor: [MODULE, MODULE, WALL_T],
   floor: [MODULE, SLAB_T, MODULE],

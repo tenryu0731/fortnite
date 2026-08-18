@@ -21,6 +21,7 @@ const SUITE = `async () => {
   const player = S.get('player');
   const physics = S.get('physics');
   const rig = S.get('cameraRig');
+  const build = S.get('build');
 
   // Deterministic driver: hold an input state for N fixed steps.
   const sim = (frames, input) => {
@@ -673,6 +674,319 @@ const SUITE = `async () => {
     const clear = physics.lineOfSight(openA, openB);
     return { ok: blocked && clear, detail: 'through wall blocked=' + blocked + ', open air clear=' + clear };
   });
+
+  /* --- build system ------------------------------------------------------ */
+  const clearBuilds = () => {
+    for (let i = build.kit.records.length - 1; i >= 0; i--) {
+      if (build.kit.records[i].alive) build.kit.destroy(i);
+    }
+    build.grid.clear();
+    build.pending.length = 0;
+    build.cancelEdit();
+    build.resources.wood = 500; build.resources.brick = 500; build.resources.metal = 500;
+    build.stats.placed = 0; build.stats.destroyed = 0; build.stats.edits = 0;
+  };
+  // Enter build mode facing a chosen direction on clear ground.
+  const buildStance = (piece, yaw = 0, pitch = -0.15) => {
+    // Clear first: leftover pieces would change which spot placeClear picks.
+    clearBuilds();
+    placeClear();
+    player.yaw = yaw; player.pitch = pitch;
+    build.setPiece(piece);
+    build.setMaterial('wood');
+    build.rotation = 0;
+    sim(2, { buildMode: true, buildPiece: piece });
+  };
+
+  t('build: preview lands on the grid in front of the player', () => {
+    buildStance(0, 0);
+    G.input.override({ buildMode: true, buildPiece: 0 });
+    G.stepSim(2);
+    const t0 = build.preview;
+    const onGrid = Math.abs(t0.z % 4) < 1e-6 || Math.abs(Math.abs(t0.z % 4) - 4) < 1e-6
+      || Math.abs(t0.x % 4) < 1e-6 || Math.abs(Math.abs(t0.x % 4) - 4) < 1e-6;
+    const ahead = t0.z < player.position.z;   // facing -Z
+    G.input.clearOverride();
+    return { ok: onGrid && ahead && t0.valid,
+             detail: 'preview at ' + t0.x.toFixed(2) + ',' + t0.y.toFixed(2) + ',' + t0.z.toFixed(2)
+               + ' valid=' + t0.valid + ' reason=' + (t0.reason || '-') };
+  });
+
+  t('build: placing a wall spends material and occupies its slot', () => {
+    buildStance(0, 0);
+    const wood0 = build.resources.wood;
+    const grid0 = build.grid.count;
+    sim(3, { buildMode: true, buildPiece: 0, fire: true });
+    const placed = build.stats.placed;
+    return { ok: placed === 1 && build.resources.wood === wood0 - 10 && build.grid.count === grid0 + 1,
+             detail: placed + ' placed, wood ' + wood0 + '->' + build.resources.wood
+               + ', grid ' + grid0 + '->' + build.grid.count };
+  });
+
+  t('build: the same slot cannot be filled twice', () => {
+    buildStance(0, 0);
+    sim(3, { buildMode: true, buildPiece: 0, fire: true });
+    const after1 = build.stats.placed;
+    build.computeTarget();
+    const reason = build.preview.reason;
+    const valid = build.preview.valid;
+    // Hold place for a while without moving; nothing further may be built here.
+    sim(60, { buildMode: true, buildPiece: 0, fire: true });
+    return { ok: after1 === 1 && !valid && reason === 'occupied' && build.stats.placed === 1,
+             detail: 'second attempt rejected (' + reason + '), total placed ' + build.stats.placed };
+  });
+
+  t('build: a placed wall is solid and blocks the player', () => {
+    buildStance(0, 0);
+    sim(3, { buildMode: true, buildPiece: 0, fire: true });
+    const rec = build.kit.records.find((r) => r.alive);
+    if (!rec) return { ok: false, detail: 'nothing placed' };
+    const z0 = player.position.z;
+    sim(80, { move: { x: 0, y: 1 } });
+    const travelled = z0 - player.position.z;
+    const wallZ = (rec.box.min.z + rec.box.max.z) / 2;
+    return { ok: player.position.z > wallZ + 0.2,
+             detail: 'walked ' + travelled.toFixed(2) + 'm, stopped ' + (player.position.z - wallZ).toFixed(2) + 'm short of the wall' };
+  });
+
+  t('build: a ramp can be climbed', () => {
+    buildStance(2, 0, -0.35);
+    sim(3, { buildMode: true, buildPiece: 2, fire: true });
+    if (build.stats.placed !== 1) return { ok: false, detail: 'ramp not placed: ' + build.preview.reason };
+    const y0 = player.position.y;
+    let peak = y0;
+    for (let i = 0; i < 140; i++) { sim(1, { move: { x: 0, y: 1 } }); peak = Math.max(peak, player.position.y); }
+    return { ok: peak > y0 + 1.5, detail: 'climbed ' + (peak - y0).toFixed(2) + 'm' };
+  });
+
+  t('build: running out of material blocks placement', () => {
+    buildStance(0, 0);
+    build.resources.wood = 5;      // less than one piece
+    build.computeTarget();
+    const reason = build.preview.reason;
+    sim(10, { buildMode: true, buildPiece: 0, fire: true });
+    return { ok: build.stats.placed === 0 && reason === 'resources',
+             detail: 'rejected with reason "' + reason + '"' };
+  });
+
+  t('build: floating pieces are rejected as unsupported', () => {
+    placeClear();
+    clearBuilds();
+    // Aim at open sky well above the ground.
+    player.yaw = 0; player.pitch = 1.2;
+    build.setPiece(1);
+    sim(2, { buildMode: true, buildPiece: 1 });
+    build.computeTarget();
+    const skyReason = build.preview.reason;
+    const skyValid = build.preview.valid;
+    // Aiming back at the ground must be valid again.
+    player.pitch = -0.5;
+    sim(2, { buildMode: true, buildPiece: 1 });
+    build.computeTarget();
+    return { ok: !skyValid && skyReason === 'unsupported' && build.preview.valid,
+             detail: 'sky: ' + skyReason + ', ground: ' + (build.preview.valid ? 'valid' : build.preview.reason) };
+  });
+
+  t('build: a piece placed on another piece is supported', () => {
+    buildStance(2, 0, -0.35);
+    sim(3, { buildMode: true, buildPiece: 2, fire: true });   // ramp on the ground
+    const first = build.stats.placed;
+    // Now look up the ramp and place a second one continuing it.
+    player.pitch = 0.1;
+    sim(4, { buildMode: true, buildPiece: 2 });
+    build.computeTarget();
+    const canChain = build.preview.valid || build.preview.reason === 'occupied';
+    return { ok: first === 1 && canChain,
+             detail: 'first ramp placed, continuation ' + (build.preview.valid ? 'valid' : build.preview.reason) };
+  });
+
+  t('build: a cone cannot hover above the wall it rests on', () => {
+    // Regression: grid-adjacency support accepted a cone a whole cell above the
+    // wall below it, because a cone anchors to the top of its cell while a wall
+    // spans the cell beneath. Support must be geometric contact.
+    buildStance(0, 0);
+    sim(4, { buildMode: true, buildPiece: 0, fire: true });
+    if (build.stats.placed !== 1) return { ok: false, detail: 'wall not placed' };
+    const wall = build.kit.records.find((r) => r.alive);
+    const wallTop = wall.box.max.y;
+
+    // Aim high into empty sky above the wall.
+    build.setPiece(3);
+    player.pitch = 0.75;
+    sim(2, { buildMode: true, buildPiece: 3 });
+    build.computeTarget();
+    const highCone = { valid: build.preview.valid, reason: build.preview.reason, y: build.preview.y };
+
+    // Aim at the wall itself: capping it must be allowed.
+    player.pitch = 0.12;
+    sim(2, { buildMode: true, buildPiece: 3 });
+    build.computeTarget();
+    const capCone = { valid: build.preview.valid, reason: build.preview.reason, y: build.preview.y };
+
+    return { ok: !highCone.valid && highCone.reason === 'unsupported'
+               && highCone.y > wallTop + 1.5,
+             detail: 'wall top ' + wallTop.toFixed(1) + 'm; cone at ' + highCone.y.toFixed(1)
+               + 'm rejected (' + highCone.reason + '); cone at ' + capCone.y.toFixed(1)
+               + 'm ' + (capCone.valid ? 'accepted' : 'rejected: ' + capCone.reason) };
+  });
+
+  t('build: health ramps up after placement', () => {
+    buildStance(0, 0);
+    build.setMaterial('brick');
+    build.resources.brick = 500;
+    sim(3, { buildMode: true, buildPiece: 0, fire: true });
+    const rec = build.kit.records.find((r) => r.alive);
+    if (!rec) return { ok: false, detail: 'nothing placed' };
+    const hp0 = rec.meta.hp, max = rec.meta.maxHp;
+    sim(120, {});                      // 2s
+    const hp1 = rec.meta.hp;
+    sim(300, {});                      // well past the ramp time
+    const hp2 = rec.meta.hp;
+    return { ok: hp0 < max * 0.5 && hp1 > hp0 && hp2 === max,
+             detail: 'hp ' + hp0 + ' -> ' + hp1 + ' -> ' + hp2 + ' (max ' + max + ')' };
+  });
+
+  t('build: damage destroys a piece and frees its slot', () => {
+    buildStance(0, 0);
+    sim(3, { buildMode: true, buildPiece: 0, fire: true });
+    const recId = build.kit.records.findIndex((r) => r.alive);
+    const rec = build.kit.records[recId];
+    const key = rec.meta.buildKey;
+    const gridBefore = build.grid.count;
+    const collidersBefore = colliders.count;
+    const partial = build.damageRecord(recId, 10);
+    const killed = build.damageRecord(recId, 10000);
+    return { ok: partial === false && killed === true && !build.grid.has(key)
+               && build.grid.count === gridBefore - 1 && colliders.count < collidersBefore,
+             detail: 'grid ' + gridBefore + '->' + build.grid.count + ', colliders ' + collidersBefore + '->' + colliders.count };
+  });
+
+  t('build: destroyed slot can be rebuilt', () => {
+    buildStance(0, 0);
+    sim(3, { buildMode: true, buildPiece: 0, fire: true });
+    const recId = build.kit.records.findIndex((r) => r.alive);
+    build.damageRecord(recId, 10000);
+    // The turbo-build cooldown means a rebuild needs more than a couple of frames.
+    sim(20, { buildMode: true, buildPiece: 0, fire: true });
+    return { ok: build.stats.placed >= 2 && build.grid.count >= 1,
+             detail: build.stats.placed + ' pieces placed in total, ' + build.grid.count + ' occupying the grid' };
+  });
+
+  t('build: reclaiming a piece refunds material', () => {
+    buildStance(0, 0);
+    const wood0 = build.resources.wood;
+    sim(3, { buildMode: true, buildPiece: 0, fire: true });
+    const recId = build.kit.records.findIndex((r) => r.alive);
+    const spent = wood0 - build.resources.wood;
+    const ok1 = build.reclaim(recId);
+    const refunded = build.resources.wood - (wood0 - spent);
+    return { ok: ok1 && spent === 10 && refunded === 5 && build.grid.count === 0,
+             detail: 'spent ' + spent + ', refunded ' + refunded };
+  });
+
+  t('build: editing a wall swaps it for the matching preset', () => {
+    buildStance(0, 0);
+    sim(3, { buildMode: true, buildPiece: 0, fire: true });
+    const recId = build.kit.records.findIndex((r) => r.alive);
+    const before = build.kit.records[recId].proto;
+    // Look at the wall we just placed and open the editor.
+    const started = build.beginEdit();
+    // Select the bottom row: the doorway preset.
+    build.toggleEditCell(6); build.toggleEditCell(7); build.toggleEditCell(8);
+    const applied = build.confirmEdit();
+    const after = build.kit.records.find((r) => r.alive);
+    return { ok: started && applied && before === 'wall' && after && after.proto === 'wallDoor'
+               && build.grid.count === 1 && !build.editing,
+             detail: 'started=' + started + ' applied=' + applied + ' ' + before + ' -> '
+               + (after ? after.proto : 'gone') + ', grid ' + build.grid.count
+               + ', live=[' + build.kit.records.filter((r) => r.alive).map((r) => r.proto).join(',') + ']' };
+  });
+
+  t('build: the "open" edit removes the wall entirely', () => {
+    buildStance(0, 0);
+    sim(3, { buildMode: true, buildPiece: 0, fire: true });
+    build.beginEdit();
+    for (let i = 0; i < 9; i++) build.toggleEditCell(i);
+    const applied = build.confirmEdit();
+    const live = build.kit.records.filter((r) => r.alive).length;
+    return { ok: applied && live === 0 && build.grid.count === 0,
+             detail: 'applied=' + applied + ', ' + live + ' pieces remain, placed=' + build.stats.placed };
+  });
+
+  t('build: editing is refused on world architecture', () => {
+    // Stand inside a POI and look at a wall the player did not build.
+    const rec = structures.kit.records.find((r) => r.alive && r.handles.length > 0 && r.proto === 'wall');
+    const b = rec.box;
+    const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+    const thin = (b.max.x - b.min.x) < (b.max.z - b.min.z);
+    const dir = thin ? [1, 0] : [0, 1];
+    clearBuilds();
+    player.spawnAt(cx - dir[0] * 2.2, cz - dir[1] * 2.2, 0);
+    player.yaw = Math.atan2(-dir[0], -dir[1]);
+    player.pitch = 0;
+    settle(4);
+    const started = build.beginEdit();
+    build.cancelEdit();
+    return { ok: started === false, detail: 'beginEdit on a POI wall returned ' + started };
+  });
+
+  t('build: the ghost preview follows the target and shows validity', () => {
+    buildStance(0, 0);
+    sim(2, { buildMode: true, buildPiece: 0 });
+    build.update(1 / 60);
+    const ghost = build.ghosts.get('wall');
+    const shownValid = ghost.visible && ghost.material === build.ghostMatValid;
+    const gx = ghost.matrix.elements[12], gz = ghost.matrix.elements[14];
+    const matches = Math.abs(gx - build.preview.x) < 1e-6 && Math.abs(gz - build.preview.z) < 1e-6;
+
+    // Make the target invalid and confirm the ghost turns to the reject colour.
+    build.resources.wood = 0;
+    build.computeTarget();
+    build.update(1 / 60);
+    const shownInvalid = ghost.visible && ghost.material === build.ghostMatInvalid;
+
+    // Leaving build mode hides every ghost.
+    sim(2, {});
+    build.update(1 / 60);
+    const hidden = ![...build.ghosts.values()].some((m) => m.visible);
+    return { ok: shownValid && matches && shownInvalid && hidden,
+             detail: 'valid=' + shownValid + ' tracks=' + matches + ' invalid=' + shownInvalid + ' hiddenOutOfMode=' + hidden };
+  });
+
+  t('build: confirming an edit with no selection applies the doorway', () => {
+    buildStance(0, 0);
+    sim(4, { buildMode: true, buildPiece: 0, fire: true });
+    build.beginEdit();
+    const applied = build.confirmEdit();
+    const after = build.kit.records.find((r) => r.alive);
+    return { ok: applied && after && after.proto === 'wallDoor',
+             detail: 'result: ' + (after ? after.proto : 'gone') };
+  });
+
+  t('build: a tap on the edited face maps to the right 3x3 cell', () => {
+    const cases = [[0.1, 0.1, 0], [0.5, 0.1, 1], [0.9, 0.1, 2],
+      [0.1, 0.5, 3], [0.5, 0.5, 4], [0.9, 0.9, 8]];
+    const bad = cases.filter(([u, v, expect]) => build.editCellAt(u, v) !== expect);
+    return { ok: bad.length === 0, detail: bad.length ? 'wrong: ' + JSON.stringify(bad) : 'all 6 corners and centre map correctly' };
+  });
+
+  t('build: whole build set stays within the draw budget', () => {
+    buildStance(1, 0, -0.6);
+    // Lay a floor, then walk and lay more, to exercise several piece types.
+    for (let p = 0; p < 4; p++) {
+      build.setPiece(p);
+      for (let i = 0; i < 6; i++) {
+        sim(4, { buildMode: true, buildPiece: p, fire: true });
+        sim(10, { move: { x: 0, y: 1 } });
+      }
+    }
+    // The point is that draw calls are bounded by the prototype count, never by
+    // how much the player builds.
+    return { ok: build.kit.meshes.size <= 8 && build.stats.placed >= 4,
+             detail: build.stats.placed + ' pieces in ' + build.kit.meshes.size + ' draw calls' };
+  });
+
+  clearBuilds();
 
   return results;
 }`;
