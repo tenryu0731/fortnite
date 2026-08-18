@@ -43,6 +43,8 @@ const SCENARIOS = [
   { name: 'build_grid', device: 'phoneLandscape', steps: 4, scenario: 'build_grid' },
   // Combat feedback: muzzle flash, tracer, impact sparks, debris and a decal.
   { name: 'fx_combat', device: 'phoneLandscape', steps: 4, scenario: 'fx_combat' },
+  // Opposing team: outfit variety and the carry pose at several ranges.
+  { name: 'bots_squad', device: 'phoneLandscape', steps: 2, scenario: 'bots_squad' },
   // Touch control layout, in both orientations and in build mode.
   { name: 'touch_landscape', showUi: true, device: 'phoneLandscape', steps: 4, scenario: 'player_tps' },
   { name: 'touch_portrait', showUi: true, device: 'phone', steps: 4, scenario: 'player_tps' },

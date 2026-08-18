@@ -25,6 +25,13 @@ const SUITE = `async () => {
   const combat = S.get('combat');
   const fx = S.get('fx');
   const audio = S.get('audio');
+  const bots = S.get('bots');
+
+  // Bots are live from world init and will shoot the player during any
+  // simulated frames. Every suite before the bot section needs the player left
+  // alone, so the opposing team is parked here and revived by that section.
+  for (const b of bots.bots) b.alive = false;
+  bots.aliveCount = 0;
 
   // Deterministic driver: hold an input state for N fixed steps.
   const sim = (frames, input) => {
@@ -1011,12 +1018,15 @@ const SUITE = `async () => {
         return amount;
       },
     };
+    d.isDummy = true;
     combat.registerTarget(d);
     return d;
   };
+  // Remove only the dummies this suite created. Stripping every non-player
+  // target would also unregister the bots, which are real combat participants.
   const dropDummies = () => {
     for (let i = combat.targets.length - 1; i >= 0; i--) {
-      if (!combat.targets[i].isPlayer) combat.targets.splice(i, 1);
+      if (combat.targets[i].entity && combat.targets[i].entity.isDummy) combat.targets.splice(i, 1);
     }
   };
 
@@ -1503,6 +1513,255 @@ const SUITE = `async () => {
                + ', beyond max distance culled' };
   });
 
+  /* --- bots --------------------------------------------------------------- */
+  const { BotManager } = await import('/src/ai/BotManager.js');
+  const STATE = BotManager.STATE;
+
+  /** Put one bot in a controlled situation and freeze the rest. */
+  const isolateBot = () => {
+    for (const b of bots.bots) { b.alive = false; }
+    bots.aliveCount = 0;
+    const b = bots.bots[0];
+    b.alive = true;
+    b.health = 100; b.shield = 0;
+    b.state = STATE.ROAM;
+    b.target = null;
+    b.damageMemory = 0;
+    b.buildCooldown = 0;
+    b.reactionTimer = 0;
+    bots.aliveCount = 1;
+    return b;
+  };
+  const reviveAll = () => {
+    for (const b of bots.bots) { b.alive = true; b.health = 100; }
+    bots.aliveCount = bots.bots.length;
+  };
+
+  t('bots: spawn on walkable land, alive and armed', () => {
+    bots.spawnAll();
+    const bad = [];
+    for (const b of bots.bots) {
+      if (!b.alive) bad.push(b.id + ':dead');
+      if (!b.weapon) bad.push(b.id + ':unarmed');
+      if (b.position.y < SEA_LEVEL) bad.push(b.id + ':water');
+      if (Math.abs(b.position.y - terrain.heightAt(b.position.x, b.position.z)) > 0.1) bad.push(b.id + ':floating');
+    }
+    const weapons = new Set(bots.bots.map((b) => b.weapon.id));
+    return { ok: bad.length === 0 && bots.aliveCount === bots.bots.length && weapons.size >= 3,
+             detail: bots.bots.length + ' bots, weapon mix: ' + [...weapons].join(',')
+               + (bad.length ? ' | ' + bad.slice(0, 4).join(' ') : '') };
+  });
+
+  t('bots: move under their own steering', () => {
+    bots.spawnAll();
+    const before = bots.bots.map((b) => b.position.clone());
+    sim(180, {});
+    let moved = 0, maxD = 0;
+    bots.bots.forEach((b, i) => {
+      const d = b.position.distanceTo(before[i]);
+      if (d > 2) moved++;
+      maxD = Math.max(maxD, d);
+    });
+    return { ok: moved >= bots.bots.length * 0.7,
+             detail: moved + '/' + bots.bots.length + ' bots moved more than 2m in 3s, furthest ' + maxD.toFixed(1) + 'm' };
+  });
+
+  t('bots: stay on the terrain surface and inside the map', () => {
+    sim(240, {});
+    const bad = [];
+    for (const b of bots.bots) {
+      if (!b.alive) continue;
+      const lim = terrain.size / 2 - 5;
+      if (Math.abs(b.position.x) > lim || Math.abs(b.position.z) > lim) bad.push(b.id + ':out');
+      const gh = terrain.heightAt(b.position.x, b.position.z);
+      if (b.position.y < gh - 1.5 || b.position.y > gh + 12) bad.push(b.id + ':detached');
+    }
+    return { ok: bad.length === 0, detail: bad.length ? bad.slice(0, 5).join(' ') : 'all bots grounded and in bounds' };
+  });
+
+  t('bots: distant bots skip physics but nearby ones do not', () => {
+    bots.spawnAll();
+    // Put the player next to bot 0 and far from the rest.
+    const b0 = bots.bots[0];
+    player.spawnAt(b0.position.x + 6, b0.position.z, 0);
+    sim(8, {});
+    const near = bots.bots.filter((b) => b.alive && !b.simple).length;
+    const far = bots.bots.filter((b) => b.alive && b.simple).length;
+    return { ok: !b0.simple && far > 0 && near >= 1,
+             detail: near + ' full-physics, ' + far + ' simplified' };
+  });
+
+  t('bots: a bot engages and shoots a visible player', () => {
+    const b = isolateBot();
+    // Stand the bot in the open, facing the player at close range.
+    placeClear();
+    const p = player.position;
+    b.position.set(p.x, p.y, p.z - 18);
+    b.velocity.set(0, 0, 0);
+    b.yaw = Math.PI;                     // face +Z, toward the player
+    b.simple = false;
+    b.weapon.ammo = b.weapon.magSize;
+    b.weapon.cooldown = 0;
+    b.aimError = 0;                      // perfect aim, so the test is about logic
+    b.skill = 1;
+    const shots0 = bots.stats.shotsFired;
+    const hp0 = player.health;
+    sim(150, {});
+    const engaged = b.state === STATE.ENGAGE || b.target === player;
+    return { ok: engaged && bots.stats.shotsFired > shots0 && player.health < hp0,
+             detail: 'state=' + BotManager.STATE_NAMES[b.state] + ', ' + (bots.stats.shotsFired - shots0)
+               + ' shots, player health ' + hp0 + ' -> ' + player.health };
+  });
+
+  t('bots: a wall between them stops the bot shooting', () => {
+    // The bot is pinned in place: left to its own steering it would strafe out
+    // from behind a 4m wall within a second, which is correct behaviour but
+    // would test the steering rather than the line-of-sight gate.
+    const b = isolateBot();
+    clearBuilds();
+    placeClear();
+    const p = player.position.clone();
+    const pin = new THREE.Vector3(p.x, p.y, p.z - 14);
+    const arm = () => {
+      b.position.copy(pin);
+      b.velocity.set(0, 0, 0);
+      b.yaw = Math.PI;
+      b.pitch = 0;
+      b.simple = false;
+      b.skill = 1; b.aimError = 0;
+      b.target = player;
+      b.reactionTimer = 0;
+      b.weapon.ammo = b.weapon.magSize;
+      b.weapon.cooldown = 0;
+      b.weapon.reloadTimer = 0;
+      player.health = 100; player.shield = 0; player.alive = true;
+    };
+
+    // Clear line of sight: the bot must connect.
+    arm();
+    for (let i = 0; i < 90; i++) { b.position.copy(pin); bots._tryShoot(b, 1 / 60); }
+    const openDamage = 100 - player.health;
+
+    // Wall up between them.
+    player.yaw = 0; player.pitch = -0.1;
+    build.setPiece(0); build.setMaterial('metal');
+    build.resources.metal = 500;
+    sim(4, { buildMode: true, buildPiece: 0, fire: true });
+    const placed = build.stats.placed;
+
+    arm();
+    for (let i = 0; i < 90; i++) { b.position.copy(pin); bots._tryShoot(b, 1 / 60); }
+    const walledDamage = 100 - player.health;
+
+    return { ok: placed === 1 && openDamage > 0 && walledDamage === 0,
+             detail: 'open line of sight ' + openDamage + ' damage, behind a wall ' + walledDamage };
+  });
+
+  t('bots: damage reduces health, then eliminates and reports it', () => {
+    reviveAll();
+    const b = bots.bots[3];
+    b.alive = true; b.health = 100; b.shield = 40;
+    const events = [];
+    const off = G.engine.bus.on('entity:eliminated', (e) => events.push(e));
+    b.applyDamage(30, { shooter: player });
+    const afterShield = [b.health, b.shield];
+    b.applyDamage(200, { shooter: player });
+    G.engine.bus.flush();
+    off();
+    return { ok: afterShield[0] === 100 && afterShield[1] === 10 && !b.alive
+               && events.length === 1 && events[0].entity === b,
+             detail: 'shield absorbed first hit (' + afterShield.join('/') + '), elimination event fired' };
+  });
+
+  t('bots: being shot makes a bot look for the shooter', () => {
+    const b = isolateBot();
+    b.target = null;
+    b.state = STATE.ROAM;
+    b.applyDamage(10, { shooter: player });
+    return { ok: b.target === player && b.state === STATE.COVER,
+             detail: 'target acquired, state -> ' + BotManager.STATE_NAMES[b.state] };
+  });
+
+  t('bots: a damaged bot builds cover using the shared build rules', () => {
+    const b = isolateBot();
+    clearBuilds();
+    placeClear();
+    const p = player.position;
+    b.position.set(p.x, p.y, p.z - 12);
+    b.simple = false;
+    b.skill = 0.9;
+    b.target = player;
+    b.damageMemory = 2.5;
+    b.buildCooldown = 0;
+    b.state = STATE.COVER;
+    const before = build.grid.count;
+    bots._tryBuild(b, 1 / 60);
+    const rec = build.kit.records.find((r) => r.alive && r.meta.owner === 'bot');
+    return { ok: build.grid.count === before + 1 && !!rec && rec.proto === 'wall',
+             detail: 'bot placed a ' + (rec ? rec.meta.material : '?') + ' wall, grid ' + before + ' -> ' + build.grid.count };
+  });
+
+  t('bots: low-skill bots aim worse than high-skill bots', () => {
+    // Recompute from skill: earlier tests deliberately zero one bot's error.
+    for (const b of bots.bots) b.aimError = 0.075 * (1 - b.skill) + 0.006;
+    const errors = bots.bots.map((b) => ({ skill: b.skill, err: b.aimError }));
+    errors.sort((a, b) => a.skill - b.skill);
+    const worst = errors[0], best = errors[errors.length - 1];
+    const monotone = errors.every((e, i) => i === 0 || e.err <= errors[i - 1].err + 1e-9);
+    return { ok: monotone && worst.err > best.err * 2,
+             detail: 'skill ' + worst.skill.toFixed(2) + ' -> error ' + worst.err.toFixed(4)
+               + '; skill ' + best.skill.toFixed(2) + ' -> ' + best.err.toFixed(4) };
+  });
+
+  t('bots: the whole opposing team costs one draw call', () => {
+    reviveAll();
+    bots.update(1 / 60);
+    return { ok: bots.pool.mesh.count === bots.aliveCount && bots.state().drawCalls === 1,
+             detail: bots.aliveCount + ' bots drawn as ' + bots.pool.mesh.count + ' instances in 1 draw call' };
+  });
+
+  t('bots: perception is time-sliced across frames', () => {
+    // Each bot re-evaluates targets once every four fixed steps, not every one.
+    let calls = 0;
+    const original = bots._perceive.bind(bots);
+    bots._perceive = (b, dt) => { calls++; return original(b, dt); };
+    reviveAll();
+    sim(16, {});
+    bots._perceive = original;
+    const expected = bots.bots.length * 4;      // 16 frames / 4 groups
+    return { ok: calls <= expected + bots.bots.length && calls >= expected - bots.bots.length,
+             detail: calls + ' perception passes over 16 frames for ' + bots.bots.length
+               + ' bots (one per bot every 4 frames = ' + expected + ')' };
+  });
+
+  t('bots: bots are damageable targets registered with combat', () => {
+    const registered = combat.targets.filter((t) => bots.bots.includes(t.entity)).length;
+    return { ok: registered === bots.bots.length,
+             detail: registered + '/' + bots.bots.length + ' bots registered as combat targets' };
+  });
+
+  t('bots: the player can eliminate a bot by shooting it', () => {
+    reviveAll();
+    const b = isolateBot();
+    armed('sniper');
+    placeClear();
+    const p = player.position;
+    b.position.set(p.x, p.y, p.z - 30);
+    b.health = 100; b.shield = 0; b.alive = true;
+    b.simple = true;                     // hold it still for the shot
+    G.engine.camera.position.set(p.x, p.y + 1.62, p.z + 2);
+    G.engine.camera.lookAt(p.x, b.position.y + 1.62, p.z - 30);
+    G.engine.camera.updateMatrixWorld(true);
+    const kills0 = combat.stats.eliminations;
+    combat.fire(player);
+    for (let i = 0; i < 120 && combat.projectiles.length; i++) combat._stepProjectiles(1 / 60);
+    G.engine.bus.flush();
+    return { ok: !b.alive && combat.stats.eliminations === kills0 + 1,
+             detail: 'bot down, player eliminations ' + kills0 + ' -> ' + combat.stats.eliminations };
+  });
+
+  reviveAll();
+  bots.spawnAll();
   dropDummies();
   clearBuilds();
   fx.clear();

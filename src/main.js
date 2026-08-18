@@ -18,6 +18,7 @@ import { CameraRig } from './player/CameraRig.js';
 import { BuildSystem } from './build/BuildSystem.js';
 import { CombatSystem } from './combat/CombatSystem.js';
 import { FxSystem } from './fx/FxSystem.js';
+import { BotManager } from './ai/BotManager.js';
 import { AudioSystem } from './audio/AudioSystem.js';
 import { makeWeapon as makeWeaponFor } from './combat/Weapons.js';
 
@@ -72,6 +73,7 @@ async function boot() {
   engine.register('build', new BuildSystem());
   engine.register('audio', new AudioSystem());
   engine.register('combat', new CombatSystem(opts.seed));
+  engine.register('bots', new BotManager(opts.seed, { count: 24 }));
   engine.register('fx', new FxSystem(opts.seed));
   engine.register('cameraRig', new CameraRig());
 
@@ -118,6 +120,7 @@ async function boot() {
     player_ads: () => null,
     build_grid: () => null,
     fx_combat: () => null,
+    bots_squad: () => null,
     terrain_coast: () => {
       const t = engine.services.get('terrain');
       // Walk outward from the centre until the ground drops below sea level.
@@ -242,6 +245,53 @@ async function boot() {
       return true;
     }
 
+    // Bots scenario: a group of opponents arranged at a range of distances, so
+    // the frame covers outfit variety, the carry pose and the instanced draw.
+    if (name === 'bots_squad') {
+      const t = engine.services.get('terrain');
+      const player = engine.services.get('player');
+      const botMgr = engine.services.get('bots');
+      const rig = engine.services.get('cameraRig');
+      const r = makeRoot(opts.seed).stream('scenario');
+      const g = t.findGround(-60, 120, r);
+
+      player.spawnAt(g.x, g.z, 0);
+      player.yaw = 0;
+      engine.stepSim(2);
+
+      // Fan the first eight bots out ahead of the player at staggered depths.
+      for (let i = 0; i < botMgr.bots.length; i++) {
+        const b = botMgr.bots[i];
+        if (i >= 8) { b.alive = false; continue; }
+        const lane = (i % 4) - 1.5;
+        const depth = 10 + Math.floor(i / 4) * 11;
+        const bx = g.x + lane * 3.4;
+        const bz = g.z - depth;
+        b.alive = true;
+        b.health = 100;
+        b.position.set(bx, t.heightAt(bx, bz), bz);
+        b.velocity.set(0, 0, 0);
+        b.yaw = Math.PI + lane * 0.12;
+        b.speed = 4 + (i % 3);
+        b.phase = i * 0.9;
+        b.outfit = i % 6;
+        b.simple = true;
+      }
+      botMgr.aliveCount = 8;
+      botMgr.update(1 / 60);
+
+      const eye = player.eyePosition(new THREE.Vector3());
+      engine.camera.position.set(eye.x + 1.2, eye.y + 1.4, eye.z + 5.5);
+      engine.camera.lookAt(eye.x, eye.y + 0.2, eye.z - 30);
+      engine.camera.updateMatrixWorld(true);
+      rig.enabled = false;
+      t.updateLods(true); t.flushQueue(t.chunks.length); t.updateLods(false);
+      engine.services.get('vegetation').repack(true);
+      engine.services.get('vegetation').repackGrass(true);
+      engine.services.get('sky').update();
+      return true;
+    }
+
     // Rig-driven scenarios: place the player, then let CameraRig settle.
     if (name === 'player_tps' || name === 'player_ads') {
       const t = engine.services.get('terrain');
@@ -316,6 +366,7 @@ async function boot() {
         player: engine.services.get('player').state(),
         build: engine.services.get('build').state(),
         combat: engine.services.get('combat').state(),
+        bots: engine.services.get('bots').state(),
         fx: engine.services.get('fx').state(),
         audio: engine.services.get('audio').state(),
         terrain: { ...t.stats, maxHeight: +t.field.maxHeight.toFixed(2) },
@@ -372,6 +423,7 @@ async function boot() {
     const t = engine.services.get('terrain');
     const eye = t.findGround(40, 60, rng);
     // Stand at eye height until the player controller takes over the camera.
+    engine.services.get('bots').spawnAll();
     const player = engine.services.get('player');
     player.spawnAt(eye.x, eye.z, 0.2);
     player.yaw = Math.PI * 0.25;

@@ -47,6 +47,10 @@ const reset = (page) => page.evaluate(() => {
   const G = window.__GAME;
   G.input.releaseAll();
   G.input.clearOverride();
+  // Park the bots: these tests are about the control layer, and a firefight in
+  // the background would move the player and pollute the weapon counters.
+  const bots = G.engine.services.peek('bots');
+  if (bots) { for (const b of bots.bots) b.alive = false; bots.aliveCount = 0; }
   const p = G.engine.services.get('player');
   const t = G.engine.services.get('terrain');
   const st = G.engine.services.get('structures');
@@ -206,15 +210,15 @@ async function main() {
         heldDown === true && stateDuring === true && afterUp === false,
         `down=${heldDown} state=${stateDuring} up=${afterUp}`) && ok;
       ok = check('FIRE actually discharges the weapon',
-        during.ammo < before.ammo && during.stats.shots > 0,
-        `ammo ${before.ammo} -> ${during.ammo}, ${during.stats.shots} shot(s)`) && ok;
+        during.ammo < before.ammo && during.stats.playerShots > 0,
+        `ammo ${before.ammo} -> ${during.ammo}, ${during.stats.playerShots} shot(s)`) && ok;
 
       // Holding fire must keep firing, bounded by the weapon's fire rate.
       await touch(cdp, 'touchStart', [{ x: r.x, y: r.y, id: 30 }]);
       await S(page, 60);
       const held = await page.evaluate(() => window.__GAME.state().combat);
       await touch(cdp, 'touchEnd', [{ x: r.x, y: r.y, id: 30 }]);
-      const fired = held.stats.shots - during.stats.shots;
+      const fired = held.stats.playerShots - during.stats.playerShots;
       ok = check('holding FIRE sustains automatic fire at the weapon rate',
         fired >= 4 && fired <= 7, `${fired} shots in 1s (AR fires 5.5/s)`) && ok;
     }

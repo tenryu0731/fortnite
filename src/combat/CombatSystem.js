@@ -37,7 +37,10 @@ export class CombatSystem {
     this.rng = Rng.forStream(seed, 'combat');
     this.targets = [];            // damageable characters
     this.projectiles = [];
-    this.stats = { shots: 0, hits: 0, headshots: 0, damageDealt: 0, structureHits: 0, eliminations: 0 };
+    // `shots`/`hits` count every shooter in the match; the player-only
+    // counters are what the results screen and accuracy readout use.
+    this.stats = { shots: 0, hits: 0, headshots: 0, damageDealt: 0, structureHits: 0,
+      eliminations: 0, playerShots: 0, playerHits: 0 };
     this.lastHit = null;
   }
 
@@ -136,10 +139,15 @@ export class CombatSystem {
   /* firing                                                              */
   /* ------------------------------------------------------------------ */
 
-  canFire(shooter = this.player) {
-    const w = this.weapon;
+  /**
+   * Firing is shooter-agnostic: the weapon is a parameter so bots carry and
+   * spend their own magazines through exactly the same code path as the
+   * player. Only presentation (recoil, stats) is player-specific.
+   */
+  canFire(shooter = this.player, w = this.weapon) {
     if (!w || !shooter.alive) return false;
-    if (this.reloading) return false;
+    if (shooter === this.player && this.reloading) return false;
+    if (w.reloadTimer > 0) return false;
     if (w.cooldown > 0) return false;
     if (w.ammo <= 0) return false;
     return true;
@@ -161,16 +169,17 @@ export class CombatSystem {
    * axis, so what the crosshair covers is what is hit — the third-person
    * offset must never introduce a parallax error between reticle and bullet.
    */
-  fire(shooter = this.player) {
-    const w = this.weapon;
-    if (!this.canFire(shooter)) {
-      if (w && w.ammo <= 0 && !this.reloading) this.beginReload();
+  fire(shooter = this.player, weapon = null) {
+    const isPlayer = shooter === this.player;
+    const w = weapon || this.weapon;
+    if (!this.canFire(shooter, w)) {
+      if (isPlayer && w && w.ammo <= 0 && !this.reloading) this.beginReload();
       return false;
     }
     const def = w.def;
 
     shooter.eyePosition(_origin);
-    if (shooter === this.player && this.rig) this.camera.getWorldDirection(_dir);
+    if (isPlayer && this.rig) this.camera.getWorldDirection(_dir);
     else shooter.lookDirection(_dir);
 
     const cone = this.currentSpread(w, shooter);
@@ -179,7 +188,10 @@ export class CombatSystem {
 
     for (let p = 0; p < pellets; p++) {
       _spread.copy(_dir);
-      if (cone > 0) this._applyCone(_spread, cone);
+      // Bots add their own aim error on top of the weapon's cone; that is what
+      // makes a low-skill bot miss without making its weapon feel broken.
+      const total = cone + (shooter.aimError || 0);
+      if (total > 0) this._applyCone(_spread, total);
       if (def.projectileSpeed) this._spawnProjectile(shooter, _origin, _spread, w);
       else if (this._resolveShot(shooter, _origin, _spread, w)) anyHit = true;
     }
@@ -188,12 +200,13 @@ export class CombatSystem {
     w.cooldown = 1 / def.fireRate;
     w.bloom = Math.min(def.bloom * 3, w.bloom + def.bloom);
     this.stats.shots++;
+    if (isPlayer) this.stats.playerShots++;
 
     // Recoil follows the weapon's pattern, so it can be learned and countered.
     const pattern = def.recoil;
     const kick = pattern[w.shotIndex % pattern.length];
     w.shotIndex++;
-    if (shooter === this.player && this.rig) {
+    if (isPlayer && this.rig) {
       const scale = shooter.aiming ? 0.72 : 1;
       this.rig.addRecoil(kick[0] * scale, kick[1] * scale);
       this.rig.addShake(Math.min(0.25, def.damage / 600));
@@ -204,7 +217,7 @@ export class CombatSystem {
       origin: _origin.clone(), dir: _dir.clone(), hit: anyHit,
       ammo: w.ammo, projectile: !!def.projectileSpeed,
     });
-    if (w.ammo === 0) this.beginReload();
+    if (w.ammo === 0 && isPlayer) this.beginReload();
     return true;
   }
 
@@ -262,7 +275,10 @@ export class CombatSystem {
 
     this.stats.hits++;
     if (part === 'head') this.stats.headshots++;
-    if (shooter === this.player) this.stats.damageDealt += before - after;
+    if (shooter === this.player) {
+      this.stats.playerHits++;
+      this.stats.damageDealt += before - after;
+    }
 
     this.lastHit = { part, damage: dmg, distance: hit.t, entity: e };
     this.bus.queue('weapon:hit', {
