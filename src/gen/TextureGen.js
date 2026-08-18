@@ -63,6 +63,19 @@ function toTexture(buf, size, { srgb = true, repeat = 1, aniso = 4 } = {}) {
 
 const SURFACES = {
   /* --- ground --------------------------------------------------------- */
+  /**
+   * Near-white luminance detail for the terrain. Terrain colour comes from
+   * per-vertex biome blending, so this map only supplies grain and breakup;
+   * keeping it desaturated lets one texture serve sand, grass, rock and snow.
+   */
+  ground(n, u, v) {
+    const macro = n.fbmTile(u * 6, v * 6, 6, 6, 3) * 0.5 + 0.5;
+    const grain = n.fbmTile(u * 42, v * 42, 42, 42, 2) * 0.5 + 0.5;
+    const speck = smoothstep(0.88, 1.0, 1 - n.worley2(u * 20, v * 20, 20));
+    const l = 176 + macro * 44 + grain * 30 - speck * 30;
+    return [l, l * 0.995, l * 0.985, macro * 0.5 + grain * 0.35 + speck * 0.15];
+  },
+
   grass(n, u, v, s, rng) {
     // Broad tonal variation plus fine blade-scale streaks.
     const macro = n.fbmTile(u * 4, v * 4, 4, 4, 4) * 0.5 + 0.5;

@@ -17,20 +17,26 @@ const MAX_DIFF_RATIO = 0.003; // 0.30%
 
 /** Scenario table — kept in sync with ARCHITECTURE.md §11.2 as subsystems land. */
 const SCENARIOS = [
-  { name: 'bootstrap', device: 'phoneLandscape', steps: 60,
-    camera: { position: [0, 14, 42], lookAt: [0, 2, 0] } },
   // Generation library: every procedural surface and mesh builder in one view.
   { name: 'gen_gallery', device: 'phoneLandscape', steps: 2, query: { scenario: 'gallery', quality: 'high' } },
+  // World: silhouette and streaming from altitude, ground detail at eye height,
+  // and the shoreline where terrain, water and fog meet.
+  { name: 'terrain_wide', device: 'phoneLandscape', steps: 4, scenario: 'terrain_wide' },
+  { name: 'terrain_ground', device: 'phoneLandscape', steps: 4, scenario: 'terrain_ground' },
+  { name: 'terrain_coast', device: 'phoneLandscape', steps: 4, scenario: 'terrain_coast' },
 ];
 
 async function capture(page, scn, file) {
   await page.evaluate((s) => {
     window.__GAME.deterministic(true);
     if (s.scenario) window.__GAME.scenario(s.scenario, s.options || {});
+    if (s.deterministicCamera === false) return;
   }, scn);
   // Advance a fixed number of simulation steps, then settle the frame.
   await page.evaluate((s) => { window.__GAME.step(s.steps || 30); }, scn);
   if (scn.camera) await page.evaluate((c) => window.__GAME.setCamera(c), scn.camera);
+  // Re-apply after stepping so streaming systems settle at the final pose.
+  if (scn.scenario) await page.evaluate((s) => window.__GAME.scenario(s), scn.scenario);
   await page.evaluate(() => { window.__GAME.renderOnly(2); });
   await page.screenshot({ path: file, animations: 'disabled', caret: 'hide' });
 }

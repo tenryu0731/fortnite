@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Rng } from './Rng.js';
 import { Noise } from './Noise.js';
+import { srgb } from './Palette.js';
 
 /**
  * MeshGen — procedural BufferGeometry builders.
@@ -156,7 +157,7 @@ export function tree(opts = {}) {
   const {
     seed = 1, height = 9, trunkRadius = 0.34, depth = 2,
     branches = 3, spread = 0.62, foliageSize = 2.4, radialSeg = 4,
-    barkColor = 0x6b4b32, leafColor = 0x3f7a35,
+    barkColor = 0x6b4b32, leafColor = 0x4c8c3d,
   } = opts;
   const rng = new Rng(seed);
   const woodParts = [];
@@ -209,7 +210,7 @@ export function tree(opts = {}) {
 /** Low-poly pine: stacked cones. Cheaper than the deciduous recursion. */
 export function pine(opts = {}) {
   const { seed = 1, height = 11, radius = 2.1, tiers = 4, trunkRadius = 0.3,
-    barkColor = 0x5a4231, leafColor = 0x2f5f3a } = opts;
+    barkColor = 0x5a4231, leafColor = 0x3a7245 } = opts;
   const rng = new Rng(seed);
   const trunk = limb(trunkRadius, trunkRadius * 0.6, height * 0.42, 5);
   paint(trunk, barkColor, 0.15, rng);
@@ -232,29 +233,64 @@ export function pine(opts = {}) {
   return { wood: trunk, leaves };
 }
 
-/** Grass tuft: a few crossed quads, vertex-coloured from root to tip. */
-export function grassTuft(seed = 1, blades = 3, height = 0.55, width = 0.13) {
+/**
+ * Grass tuft: blades built as tapered, forward-bent strips rather than quads.
+ * Tapering to a point is what stops a blade from reading as a paper card, and
+ * costs nothing extra — it is the same triangle count as a subdivided plane.
+ * Meant to be rendered double-sided, since a blade is visible from both faces.
+ */
+export function grassTuft(seed = 1, blades = 4, height = 0.62, width = 0.075) {
   const rng = new Rng(seed);
-  const parts = [];
-  for (let i = 0; i < blades; i++) {
-    const h = height * rng.range(0.7, 1.25);
-    const g = new THREE.PlaneGeometry(width, h, 1, 2);
-    const pos = g.getAttribute('position');
-    // Bend the blade so it does not read as a flat card.
-    for (let k = 0; k < pos.count; k++) {
-      const y = pos.getY(k) + h / 2;
-      const t = y / h;
-      pos.setZ(k, t * t * h * 0.34);
+  const SEG = 3;
+  const vertCount = (SEG + 1) * 2;
+  const positions = new Float32Array(blades * vertCount * 3);
+  const colors = new Float32Array(blades * vertCount * 3);
+  const indices = [];
+  // Authored in sRGB; the attribute is read as linear.
+  const ROOT_COL = srgb(0.15, 0.33, 0.09);
+  const TIP_COL = srgb(0.42, 0.66, 0.26);
+
+  for (let b = 0; b < blades; b++) {
+    const h = height * rng.range(0.65, 1.35);
+    const w = width * rng.range(0.8, 1.3);
+    const yaw = rng.range(0, Math.PI * 2);
+    const lean = rng.range(0.18, 0.55);
+    const ox = rng.range(-0.14, 0.14), oz = rng.range(-0.14, 0.14);
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    const tint = rng.range(0.85, 1.15);
+    const base = b * vertCount;
+
+    for (let s = 0; s <= SEG; s++) {
+      const t = s / SEG;
+      const y = t * h;
+      // Quadratic bend forward along the blade's own facing direction.
+      const fwd = t * t * h * lean;
+      const halfW = w * (1 - t) * (1 - t * 0.35);
+      for (let side = 0; side < 2; side++) {
+        const sw = side === 0 ? -halfW : halfW;
+        const px = ox + cy * sw + sy * fwd;
+        const pz = oz - sy * sw + cy * fwd;
+        const i = (base + s * 2 + side) * 3;
+        positions[i] = px; positions[i + 1] = y; positions[i + 2] = pz;
+        colors[i] = (ROOT_COL[0] + (TIP_COL[0] - ROOT_COL[0]) * t) * tint;
+        colors[i + 1] = (ROOT_COL[1] + (TIP_COL[1] - ROOT_COL[1]) * t) * tint;
+        colors[i + 2] = (ROOT_COL[2] + (TIP_COL[2] - ROOT_COL[2]) * t) * tint;
+      }
     }
-    g.computeVertexNormals();
-    xform(g, { pos: [rng.range(-0.12, 0.12), h / 2, rng.range(-0.12, 0.12)], rot: [0, rng.range(0, Math.PI), 0] });
-    paintBy(g, (x, y) => {
-      const t = THREE.MathUtils.clamp(y / h, 0, 1);
-      return [0.18 + t * 0.30, 0.32 + t * 0.42, 0.12 + t * 0.16];
-    });
-    parts.push(g);
+    for (let s = 0; s < SEG; s++) {
+      const a = base + s * 2;
+      indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    }
   }
-  return merge(parts);
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  const n = positions.length / 3;
+  g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+  return g;
 }
 
 /** Hollow window/door frame built from four boxes. */
