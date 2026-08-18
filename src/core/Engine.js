@@ -123,7 +123,7 @@ export class Engine {
    * Advance simulation by `dt` seconds and render once.
    * Used by both the rAF loop and the deterministic harness stepper.
    */
-  advance(dt, wallMs = dt * 1000) {
+  advance(dt, wallMs = dt * 1000, render = true) {
     const p = this.profiler;
     const tFrameStart = p.now();
 
@@ -147,9 +147,12 @@ export class Engine {
     for (let i = 0; i < this._update.length; i++) this._update[i].update(dt, alpha);
     for (let i = 0; i < this._late.length; i++) this._late[i].lateUpdate(dt, alpha);
 
-    const tRender = p.now();
-    this.renderer.render(this.scene, this.camera);
-    const renderMs = p.now() - tRender;
+    let renderMs = 0;
+    if (render) {
+      const tRender = p.now();
+      this.renderer.render(this.scene, this.camera);
+      renderMs = p.now() - tRender;
+    }
 
     this.bus.flush();
 
@@ -162,6 +165,15 @@ export class Engine {
   /** Deterministic stepping for headless verification. */
   step(n = 1, dt = FIXED_DT) {
     for (let i = 0; i < n; i++) this.advance(dt, dt * 1000);
+  }
+
+  /**
+   * Simulation-only stepping. Logic tests run thousands of steps, and the
+   * verification container rasterises in software, so rendering each one would
+   * make those suites take minutes instead of seconds.
+   */
+  stepSim(n = 1, dt = FIXED_DT) {
+    for (let i = 0; i < n; i++) this.advance(dt, dt * 1000, false);
   }
 
   dispose() {

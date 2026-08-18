@@ -14,7 +14,7 @@ async function main() {
     const { context, page, logs } = await openGame(browser, { device: 'phoneLandscape', port });
 
     const api = await page.evaluate(() => Object.keys(window.__GAME));
-    for (const k of ['engine', 'deterministic', 'step', 'metrics', 'setCamera', 'state', 'input', 'renderOnly', 'resetMetrics']) {
+    for (const k of ['engine', 'deterministic', 'step', 'stepSim', 'metrics', 'setCamera', 'state', 'input', 'renderOnly', 'resetMetrics']) {
       ok = check(`__GAME.${k} exists`, api.includes(k)) && ok;
     }
 

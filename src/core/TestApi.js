@@ -26,6 +26,9 @@ export function installTestApi(engine, ctx) {
 
     step(n = 1, dt) { engine.step(n, dt); return engine.frame; },
 
+    /** Advance simulation without rendering — for logic tests. */
+    stepSim(n = 1, dt) { engine.stepSim(n, dt); return engine.frame; },
+
     /** Render `n` frames without advancing simulation — for settling GPU state. */
     renderOnly(n = 1) {
       for (let i = 0; i < n; i++) engine.renderer.render(engine.scene, engine.camera);

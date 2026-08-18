@@ -47,7 +47,7 @@ function shadePanel(geo, height = MODULE) {
   for (let i = 0; i < pos.count; i++) {
     const ny = nrm.getY(i);
     const y = pos.getY(i);
-    const facing = 0.80 + Math.max(0, ny) * 0.28 - Math.max(0, -ny) * 0.30;
+    const facing = 0.84 + Math.max(0, ny) * 0.24 - Math.max(0, -ny) * 0.16;
     const vertical = 0.90 + THREE.MathUtils.clamp(y / height, -0.5, 1) * 0.14;
     const k = facing * vertical;
     col[i * 3] = k; col[i * 3 + 1] = k; col[i * 3 + 2] = k;
@@ -180,9 +180,34 @@ const PROTOS = {
 export const PROTO_NAMES = Object.keys(PROTOS);
 
 /**
- * Height and footprint of each prototype, used to derive collision boxes
- * without inspecting geometry at placement time.
+ * Collision shape per prototype, in the prototype's own local space, as a list
+ * of boxes given by centre and half-extents.
+ *
+ * Most panels are a single box. A staircase is emphatically not: representing
+ * one as its overall bounds turns it into a solid four-metre cube that nothing
+ * can walk up. Each tread therefore gets its own box, sized so the rise from
+ * one to the next stays inside the character controller's step height.
  */
+function stairBoxes() {
+  const steps = 8;
+  const sh = MODULE / steps, sd = MODULE / steps;
+  const hw = (MODULE - 0.4) / 2;
+  const out = [];
+  for (let i = 0; i < steps; i++) {
+    // Geometry ascends toward -Z; each tread is solid from the ground up so a
+    // character standing on it is supported.
+    const top = sh * (i + 1);
+    const zc = MODULE / 2 - sd * (i + 0.5);
+    out.push({ cx: 0, cy: top / 2, cz: zc, hx: hw, hy: top / 2, hz: sd / 2 });
+  }
+  return out;
+}
+
+const SHAPES = {
+  stair: stairBoxes(),
+};
+
+/** Overall footprint per prototype, used when no explicit shape is given. */
 const BOUNDS = {
   wall: [MODULE, MODULE, WALL_T],
   wallWindow: [MODULE, MODULE, WALL_T],
@@ -233,7 +258,7 @@ export class StructureKit {
     const geo = PROTOS[proto]();
     const isGlass = proto === 'glass';
     const mat = isGlass
-      ? this.materials.basic('glasspane', { transparent: true, opacity: 0.2, depthWrite: false, vertexColors: true, side: THREE.DoubleSide })
+      ? this.materials.basic('glasspane', { transparent: true, opacity: 0.14, depthWrite: false, vertexColors: true, side: THREE.DoubleSide })
       : this.material;
     m = new THREE.InstancedMesh(geo, mat, this.capacityHint);
     m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -252,8 +277,12 @@ export class StructureKit {
   }
 
   /**
-   * Place one panel. `rotY` is a yaw in radians; collision is derived from the
-   * prototype's footprint, swapped when the panel is rotated a quarter turn.
+   * Place one panel.
+   *
+   * Collision boxes are produced by transforming each local shape box's eight
+   * corners through the same matrix used for rendering and taking the world
+   * AABB. Deriving the box from unrotated bounds would misplace every rotated
+   * wall and, worse, give a pitched roof slab the collision of a flat one.
    */
   place(proto, x, y, z, rotY = 0, material = MAT.timber, opts = {}) {
     const mesh = this._mesh(proto);
@@ -268,31 +297,35 @@ export class StructureKit {
     mesh.setMatrixAt(idx, _m);
     mesh.instanceMatrix.needsUpdate = true;
 
-    const [bw, bh, bd] = BOUNDS[proto];
     _c.setHex(material.tint);
     mesh.setColorAt(idx, _c);
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
 
-    // Collision AABB in world space: rotate the footprint, keep it axis aligned.
-    const quarter = Math.abs(Math.sin(rotY)) > 0.5;
-    const hw = (quarter ? bd : bw) * 0.5 * (opts.sx || 1);
-    const hd = (quarter ? bw : bd) * 0.5 * (opts.sz || 1);
-    const h = bh * (opts.sy || 1);
-    // Prototypes with their origin at the base extend upward; slabs and props
-    // that are centred are handled by the yBase flag.
-    const yBase = proto === 'floor' ? y - h / 2 : y;
-    _min.set(x - hw, yBase, z - hd);
-    _max.set(x + hw, yBase + h, z + hd);
-
+    const recordId = this.records.length;
     const meta = {
       type: 'structure', proto, material: material.key,
       harvest: material.harvest, hp: material.hp, maxHp: material.hp,
-      record: this.records.length, solid: opts.solid !== false,
+      record: recordId, solid: opts.solid !== false,
     };
-    const handle = opts.solid === false ? -1 : this.colliders.add(_min, _max, meta);
-    this.records.push({ proto, idx, handle, meta, alive: true, box: new THREE.Box3(_min.clone(), _max.clone()) });
+
+    const handles = [];
+    const bounds = new THREE.Box3();
+    bounds.makeEmpty();
+    if (opts.solid !== false) {
+      for (const b of localBoxes(proto)) {
+        worldAabb(b, _m, _min, _max);
+        handles.push(this.colliders.add(_min, _max, meta));
+        bounds.expandByPoint(_min);
+        bounds.expandByPoint(_max);
+      }
+    } else {
+      worldAabb(localBoxes(proto)[0], _m, _min, _max);
+      bounds.set(_min.clone(), _max.clone());
+    }
+
+    this.records.push({ proto, idx, handles, meta, alive: true, box: bounds });
     this.stats.placed++;
-    return meta.record;
+    return recordId;
   }
 
   /** Apply damage to a placed panel; returns true when it is destroyed. */
@@ -316,7 +349,8 @@ export class StructureKit {
     _m.makeScale(0, 0, 0);
     mesh.setMatrixAt(r.idx, _m);
     mesh.instanceMatrix.needsUpdate = true;
-    if (r.handle >= 0) this.colliders.remove(r.handle);
+    for (const h of r.handles) this.colliders.remove(h);
+    r.handles.length = 0;
     r.alive = false;
     this.stats.destroyed++;
     return true;
@@ -336,4 +370,32 @@ export class StructureKit {
   }
 }
 
-export { PROTOS, BOUNDS };
+/** Local collision boxes for a prototype: an explicit shape, or its bounds. */
+function localBoxes(proto) {
+  if (SHAPES[proto]) return SHAPES[proto];
+  const [w, h, d] = BOUNDS[proto];
+  // Prototypes whose origin sits at the module floor extend upward; the slab
+  // and prop prototypes are already centred on their own origin.
+  const centred = proto === 'floor';
+  return [{ cx: 0, cy: centred ? 0 : h / 2, cz: 0, hx: w / 2, hy: h / 2, hz: d / 2 }];
+}
+
+const _corner = new THREE.Vector3();
+
+/** World-space AABB of a local box transformed by `m`. */
+function worldAabb(b, m, min, max) {
+  min.set(Infinity, Infinity, Infinity);
+  max.set(-Infinity, -Infinity, -Infinity);
+  for (let i = 0; i < 8; i++) {
+    _corner.set(
+      b.cx + ((i & 1) ? b.hx : -b.hx),
+      b.cy + ((i & 2) ? b.hy : -b.hy),
+      b.cz + ((i & 4) ? b.hz : -b.hz),
+    ).applyMatrix4(m);
+    min.min(_corner);
+    max.max(_corner);
+  }
+  return min;
+}
+
+export { PROTOS, BOUNDS, SHAPES, localBoxes };

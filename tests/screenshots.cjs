@@ -29,6 +29,9 @@ const SCENARIOS = [
   { name: 'poi_factory', device: 'phoneLandscape', steps: 4, scenario: 'poi_factory' },
   { name: 'poi_tower', device: 'phoneLandscape', steps: 4, scenario: 'poi_tower' },
   { name: 'poi_street', device: 'phoneLandscape', steps: 4, scenario: 'poi_street' },
+  // Player: default third-person framing and the aim-down-sights rig.
+  { name: 'player_tps', device: 'phoneLandscape', steps: 4, scenario: 'player_tps' },
+  { name: 'player_ads', device: 'phoneLandscape', steps: 4, scenario: 'player_ads' },
 ];
 
 async function capture(page, scn, file) {

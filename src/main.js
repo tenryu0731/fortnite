@@ -8,6 +8,11 @@ import { Terrain } from './world/Terrain.js';
 import { Sky } from './world/Sky.js';
 import { Vegetation } from './world/Vegetation.js';
 import { Structures } from './world/Structures.js';
+import { Physics } from './sim/Physics.js';
+import { InputHub } from './input/InputState.js';
+import { DesktopInput } from './input/DesktopInput.js';
+import { PlayerController } from './player/PlayerController.js';
+import { CameraRig } from './player/CameraRig.js';
 
 /** Query-string overrides let the harness pin seed/quality/scenario per run. */
 function queryOverrides() {
@@ -49,6 +54,13 @@ async function boot() {
   engine.register('terrain', new Terrain(opts.seed, { size: 1024 }));
   engine.register('structures', new Structures(opts.seed, { poiCount: 9 }));
   engine.register('vegetation', new Vegetation(opts.seed));
+  engine.register('physics', new Physics());
+
+  const input = new InputHub();
+  input.addSource(new DesktopInput(input, canvas, settings));
+  engine.register('input', input);
+  engine.register('player', new PlayerController({ seed: opts.seed }));
+  engine.register('cameraRig', new CameraRig());
 
   /**
    * Named camera setups for visual regression. Each one repositions the camera
@@ -87,6 +99,10 @@ async function boot() {
         },
       };
     })(),
+    // Standard third-person framing, driven by the real camera rig rather than
+    // a fixed pose, so the rig itself is covered by visual regression.
+    player_tps: () => null,
+    player_ads: () => null,
     terrain_coast: () => {
       const t = engine.services.get('terrain');
       // Walk outward from the centre until the ground drops below sea level.
@@ -103,7 +119,42 @@ async function boot() {
   function applyScenario(name) {
     const fn = SCENARIOS[name];
     if (!fn) return false;
+
+    // Rig-driven scenarios: place the player, then let CameraRig settle.
+    if (name === 'player_tps' || name === 'player_ads') {
+      const t = engine.services.get('terrain');
+      const st = engine.services.get('structures');
+      const rig = engine.services.get('cameraRig');
+      const player = engine.services.get('player');
+      const poi = st.pois.find((p) => p.type === 'town') || st.pois[0];
+      // Stand just outside the POI pad looking in, so the frame shows the
+      // character, the ground detail and the buildings together.
+      const bearing = 2.35;
+      const dist = poi.radius + 12;
+      const px = poi.x + Math.cos(bearing) * dist;
+      const pz = poi.z + Math.sin(bearing) * dist;
+      player.spawnAt(px, pz, 0);
+      player.yaw = Math.atan2(-(poi.x - px), -(poi.z - pz));
+      player.pitch = -0.04;
+      player.aiming = name === 'player_ads';
+      rig.enabled = true;
+      rig.occlusion = 1;
+      // Settle the rig's exponential smoothing to its steady state.
+      for (let i = 0; i < 120; i++) rig.update(1 / 60);
+      engine.services.get('vegetation').repack(true);
+      engine.services.get('vegetation').repackGrass(true);
+      t.updateLods(true);
+      t.flushQueue(t.chunks.length);
+      t.updateLods(false);
+      engine.services.get('sky').update();
+      for (let i = 0; i < 20; i++) rig.update(1 / 60);
+      void t;
+      return true;
+    }
+
     const pose = fn();
+    const rig = engine.services.peek('cameraRig');
+    if (rig) rig.enabled = false;   // scenario poses are authoritative
     engine.camera.position.set(pose.pos[0], pose.pos[1], pose.pos[2]);
     engine.camera.lookAt(pose.look[0], pose.look[1], pose.look[2]);
     engine.camera.updateMatrixWorld(true);
@@ -129,6 +180,7 @@ async function boot() {
         frame: engine.frame,
         time: engine.time,
         camera: engine.camera.position.toArray().map((n) => +n.toFixed(3)),
+        player: engine.services.get('player').state(),
         terrain: { ...t.stats, maxHeight: +t.field.maxHeight.toFixed(2) },
         vegetation: { ...v.stats },
         structures: { ...engine.services.get('structures').stats,
@@ -136,9 +188,17 @@ async function boot() {
         colliders: c.count,
       };
     },
+    inputApi: {
+      override: (partial) => engine.services.get('input').override(partial),
+      clearOverride: () => engine.services.get('input').clearOverride(),
+      state: () => JSON.parse(JSON.stringify(engine.services.get('input').state)),
+    },
     debug: {
       heightAt: (x, z) => engine.services.get('terrain').heightAt(x, z),
       biomeAt: (x, z) => engine.services.get('terrain').biomeAt(x, z),
+      teleport: (x, z, yOff = 0) => engine.services.get('player').spawnAt(x, z, yOff).toArray(),
+      setYaw: (y) => { engine.services.get('player').yaw = y; },
+      setPitch: (p) => { engine.services.get('player').pitch = p; },
     },
   };
   const api = installTestApi(engine, ctx);
@@ -149,8 +209,10 @@ async function boot() {
     const t = engine.services.get('terrain');
     const eye = t.findGround(40, 60, rng);
     // Stand at eye height until the player controller takes over the camera.
-    engine.camera.position.set(eye.x, eye.y + 1.72, eye.z);
-    engine.camera.lookAt(eye.x + 30, eye.y + 6, eye.z + 40);
+    const player = engine.services.get('player');
+    player.spawnAt(eye.x, eye.z, 0.2);
+    player.yaw = Math.PI * 0.25;
+    engine.services.get('cameraRig').update(0.016);
     if (opts.scenario && SCENARIOS[opts.scenario]) applyScenario(opts.scenario);
     engine.start();
     document.body.dataset.ready = '1';

@@ -18,9 +18,41 @@ const SUITE = `async () => {
   const terrain = S.get('terrain');
   const veg = S.get('vegetation');
   const structures = S.get('structures');
+  const player = S.get('player');
+  const physics = S.get('physics');
+  const rig = S.get('cameraRig');
+
+  // Deterministic driver: hold an input state for N fixed steps.
+  const sim = (frames, input) => {
+    if (input) G.input.override(input); else G.input.clearOverride();
+    G.stepSim(frames);
+    G.input.clearOverride();
+  };
+  const settle = (frames = 30) => sim(frames, {});
+  // Put the player on flat ground clear of props, facing -Z.
+  const placeClear = () => {
+    for (let r = 0; r < 400; r++) {
+      const a = r * 2.399, rad = 12 + r * 1.1;
+      const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+      if (terrain.heightAt(x, z) < SEA_LEVEL + 2) continue;
+      if (terrain.slopeAt(x, z) < 0.985) continue;
+      if (structures.insidePoi(x, z, 20)) continue;
+      const out = [];
+      colliders.query(x - 3, terrain.heightAt(x, z) - 1, z - 3, x + 3, terrain.heightAt(x, z) + 4, z + 3, out);
+      if (out.length) continue;
+      player.spawnAt(x, z, 0);
+      player.yaw = 0; player.pitch = 0;
+      player.body.vel.set(0, 0, 0);
+      player.health = 100; player.shield = 0; player.alive = true;
+      settle(12);
+      return true;
+    }
+    return false;
+  };
   const colliders = S.get('colliders');
   const THREE = await import('three');
   const { Colliders } = await import('/src/world/Colliders.js');
+  const { MAT } = await import('/src/world/StructureKit.js');
   const { SEA_LEVEL } = await import('/src/world/Biome.js');
 
   /* --- terrain queries ---------------------------------------------- */
@@ -283,7 +315,7 @@ const SUITE = `async () => {
   t('structures: panels sit above the terrain surface', () => {
     let below = 0, n = 0;
     for (const r of structures.kit.records) {
-      if (!r.alive || r.handle < 0) continue;
+      if (!r.alive || r.handles.length === 0) continue;
       n++;
       const cx = (r.box.min.x + r.box.max.x) / 2, cz = (r.box.min.z + r.box.max.z) / 2;
       // Allow half a metre of embedding for slabs seated on the pad.
@@ -294,7 +326,7 @@ const SUITE = `async () => {
 
   t('structures: destroying a panel removes its collider and hides it', () => {
     const kit = structures.kit;
-    const rec = kit.records.findIndex((r) => r.alive && r.handle >= 0 && r.proto === 'wall');
+    const rec = kit.records.findIndex((r) => r.alive && r.handles.length > 0 && r.proto === 'wall');
     if (rec < 0) return { ok: false, detail: 'no wall panel found' };
     const r = kit.records[rec];
     const cx = (r.box.min.x + r.box.max.x) / 2, cy = (r.box.min.y + r.box.max.y) / 2, cz = (r.box.min.z + r.box.max.z) / 2;
@@ -302,19 +334,20 @@ const SUITE = `async () => {
     colliders.query(cx - 0.1, cy - 0.1, cz - 0.1, cx + 0.1, cy + 0.1, cz + 0.1, out);
     const hadCollider = out.length > 0;
     const before = colliders.count;
+    const handleCount = r.handles.length;
     const destroyed = kit.destroy(rec);
     colliders.query(cx - 0.1, cy - 0.1, cz - 0.1, cx + 0.1, cy + 0.1, cz + 0.1, out);
     const stillThere = out.some((h) => colliders.getMeta(h) === r.meta);
     const m = new THREE.Matrix4();
     kit.meshes.get('wall').getMatrixAt(r.idx, m);
     const scaleZero = m.elements[0] === 0 && m.elements[5] === 0;
-    return { ok: hadCollider && destroyed && !stillThere && scaleZero && colliders.count === before - 1,
+    return { ok: hadCollider && destroyed && !stillThere && scaleZero && colliders.count === before - handleCount,
              detail: 'colliders ' + before + ' -> ' + colliders.count };
   });
 
   t('structures: damage accumulates before destroying a panel', () => {
     const kit = structures.kit;
-    const rec = kit.records.findIndex((r) => r.alive && r.handle >= 0 && r.proto === 'floor');
+    const rec = kit.records.findIndex((r) => r.alive && r.handles.length > 0 && r.proto === 'floor');
     const r = kit.records[rec];
     const hp = r.meta.maxHp;
     const first = kit.damage(rec, hp - 10);
@@ -336,6 +369,309 @@ const SUITE = `async () => {
       }
     }
     return { ok: bad === 0, detail: bad + ' props inside a POI' };
+  });
+
+  /* --- player movement -------------------------------------------------- */
+  t('player: spawns standing on the terrain surface', () => {
+    if (!placeClear()) return { ok: false, detail: 'no clear spawn found' };
+    const p = player.position;
+    const gh = terrain.heightAt(p.x, p.z);
+    return { ok: player.body.grounded && Math.abs(p.y - gh) < 0.05,
+             detail: 'y=' + p.y.toFixed(3) + ' ground=' + gh.toFixed(3) };
+  });
+
+  t('player: forward input moves along the facing direction', () => {
+    placeClear();
+    const yaw = 0;               // facing -Z
+    player.yaw = yaw;
+    const start = player.position.clone();
+    sim(60, { move: { x: 0, y: 1 } });
+    const d = player.position.clone().sub(start);
+    const forwardDist = -d.z;
+    const lateral = Math.abs(d.x);
+    return { ok: forwardDist > 3.5 && lateral < 0.6,
+             detail: 'forward ' + forwardDist.toFixed(2) + 'm, lateral ' + lateral.toFixed(2) + 'm in 1s' };
+  });
+
+  t('player: strafing moves sideways, not forward', () => {
+    placeClear();
+    player.yaw = 0;
+    const start = player.position.clone();
+    sim(60, { move: { x: 1, y: 0 } });
+    const d = player.position.clone().sub(start);
+    return { ok: d.x > 3.5 && Math.abs(d.z) < 0.6,
+             detail: 'right ' + d.x.toFixed(2) + 'm, forward ' + (-d.z).toFixed(2) + 'm' };
+  });
+
+  t('player: walk, sprint and crouch reach their configured speeds', () => {
+    const measure = (input) => {
+      placeClear();
+      player.yaw = 0;
+      sim(30, input);            // let it reach steady state
+      const a = player.position.clone();
+      sim(60, input);
+      return a.distanceTo(player.position);
+    };
+    const walk = measure({ move: { x: 0, y: 1 } });
+    const sprint = measure({ move: { x: 0, y: 1 }, sprint: true });
+    const crouch = measure({ move: { x: 0, y: 1 }, crouch: true });
+    const ok = Math.abs(walk - 4.4) < 0.6 && Math.abs(sprint - 7.2) < 0.9 && Math.abs(crouch - 2.2) < 0.5
+      && sprint > walk && walk > crouch;
+    return { ok, detail: 'walk ' + walk.toFixed(2) + ' sprint ' + sprint.toFixed(2) + ' crouch ' + crouch.toFixed(2) + ' m/s' };
+  });
+
+  t('player: jump leaves the ground and lands again', () => {
+    placeClear();
+    const y0 = player.position.y;
+    let peak = y0, airFrames = 0;
+    sim(1, { jump: true });
+    for (let i = 0; i < 90; i++) {
+      sim(1, {});
+      peak = Math.max(peak, player.position.y);
+      if (!player.body.grounded) airFrames++;
+      else if (i > 5) break;
+    }
+    const rise = peak - y0;
+    const landed = player.body.grounded && Math.abs(player.position.y - y0) < 0.15;
+    return { ok: rise > 0.8 && rise < 1.6 && landed && airFrames > 20,
+             detail: 'rise ' + rise.toFixed(2) + 'm, ' + airFrames + ' air frames, landed=' + landed };
+  });
+
+  t('player: cannot jump again while airborne', () => {
+    placeClear();
+    sim(1, { jump: true });
+    sim(12, {});
+    const yMid = player.position.y;
+    const vMid = player.body.vel.y;
+    sim(1, { jump: true });
+    return { ok: player.body.vel.y < vMid + 0.1,
+             detail: 'vy ' + vMid.toFixed(2) + ' -> ' + player.body.vel.y.toFixed(2) };
+  });
+
+  t('player: falls under gravity when spawned in the air', () => {
+    placeClear();
+    const p = player.position.clone();
+    player.spawnAt(p.x, p.z, 12);
+    const y0 = player.position.y;
+    sim(40, {});
+    const fell = y0 - player.position.y;
+    sim(90, {});
+    return { ok: fell > 2 && player.body.grounded,
+             detail: 'fell ' + fell.toFixed(2) + 'm in 0.66s, grounded after 2.2s' };
+  });
+
+  t('player: taking a long fall applies damage', () => {
+    placeClear();
+    const p = player.position.clone();
+    player.health = 100;
+    player.spawnAt(p.x, p.z, 42);
+    for (let i = 0; i < 240 && !player.body.grounded; i++) sim(1, {});
+    return { ok: player.health < 100 && player.health > 0,
+             detail: 'health after 42m drop: ' + player.health };
+  });
+
+  t('player: a short drop causes no damage', () => {
+    placeClear();
+    const p = player.position.clone();
+    player.health = 100;
+    player.spawnAt(p.x, p.z, 6);
+    for (let i = 0; i < 180 && !player.body.grounded; i++) sim(1, {});
+    return { ok: player.health === 100, detail: 'health after 6m drop: ' + player.health };
+  });
+
+  t('player: crouching lowers the capsule and the eye', () => {
+    placeClear();
+    const h0 = player.body.height, e0 = player.eyeHeight;
+    sim(20, { crouch: true });
+    const h1 = player.body.height, e1 = player.eyeHeight;
+    sim(20, {});
+    return { ok: h1 < h0 - 0.3 && e1 < e0 - 0.3 && player.body.height === h0,
+             detail: 'height ' + h0.toFixed(2) + '->' + h1.toFixed(2) + ', eye ' + e0.toFixed(2) + '->' + e1.toFixed(2) };
+  });
+
+  t('player: is blocked by a building wall', () => {
+    // Walk straight at the outside of a wall panel and check it stops.
+    const rec = structures.kit.records.find((r) => r.alive && r.handles.length > 0 && r.proto === 'wall');
+    const b = rec.box;
+    const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+    const thin = (b.max.x - b.min.x) < (b.max.z - b.min.z);
+    // Approach along the wall's thin axis from outside.
+    const dir = thin ? [1, 0] : [0, 1];
+    const startX = cx - dir[0] * 4, startZ = cz - dir[1] * 4;
+    player.spawnAt(startX, startZ, 0);
+    player.body.vel.set(0, 0, 0);
+    // Face the wall: yaw such that forward (-sin yaw, -cos yaw) points at it.
+    player.yaw = Math.atan2(-dir[0], -dir[1]);
+    settle(6);
+    const before = player.position.clone();
+    sim(70, { move: { x: 0, y: 1 } });
+    const travelled = Math.hypot(player.position.x - before.x, player.position.z - before.z);
+    const gap = Math.abs(thin ? player.position.x - cx : player.position.z - cz);
+    return { ok: travelled < 4.2 && gap > 0.3,
+             detail: 'travelled ' + travelled.toFixed(2) + 'm, stopped ' + gap.toFixed(2) + 'm from wall centre' };
+  });
+
+  t('player: steps over low obstacles and is stopped by tall ones', () => {
+    // Directly exercises the step-height contract: an obstacle under the step
+    // height is walked onto, one above it is a wall. Test boxes are placed on
+    // ground levelled to the player's own feet so slope cannot confound it.
+    if (!placeClear()) return { ok: false, detail: 'no clear spawn' };
+    const p0 = player.position.clone();
+    const obstacleZ = p0.z + 3.6;
+
+    const trial = (scaleY) => {
+      const recId = structures.kit.place('crate', p0.x, p0.y, obstacleZ, 0, MAT.timber,
+        { sx: 3.2, sy: scaleY, sz: 1.0 });
+      if (recId === null) return null;
+      const top = structures.kit.records[recId].box.max.y;
+      player.spawnAt(p0.x, p0.z, 0);
+      player.body.pos.copy(p0);
+      player.body.vel.set(0, 0, 0);
+      player.yaw = Math.PI;                     // face +Z, toward the obstacle
+      settle(8);
+      const y0 = player.position.y;
+      // Track the peak, not the end point: after stepping over a low obstacle
+      // the player continues onto the ground beyond it.
+      let peak = y0;
+      for (let i = 0; i < 90; i++) { sim(1, { move: { x: 0, y: 1 } }); peak = Math.max(peak, player.position.y); }
+      const out = { rise: peak - y0, z: player.position.z, top: top - y0, jumps: player.stats.jumps };
+      structures.kit.destroy(recId);
+      return out;
+    };
+
+    const low = trial(0.38);      // ~0.44m: under the 0.58m step height
+    const tall = trial(1.0);      // ~1.15m: well above it
+    if (!low || !tall) return { ok: false, detail: 'crate capacity exhausted' };
+
+    const steppedUp = low.rise > low.top - 0.15 && low.z > obstacleZ;
+    const blocked = tall.rise < 0.2 && tall.z < obstacleZ;
+    return { ok: steppedUp && blocked,
+             detail: 'low (' + low.top.toFixed(2) + 'm): peaked ' + low.rise.toFixed(2) + 'm and passed over; '
+               + 'tall (' + tall.top.toFixed(2) + 'm): peaked ' + tall.rise.toFixed(2) + 'm and stopped short' };
+  });
+
+  t('player: climbs a staircase into an upper floor', () => {
+    const rec = structures.kit.records.find((r) => r.alive && r.handles.length > 0 && r.proto === 'stair');
+    if (!rec) return { ok: false, detail: 'no stair found' };
+    const b = rec.box;
+    const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+    let best = null;
+    // Approach from each side; a staircase only ascends from its low end.
+    for (const [dx, dz] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+      player.spawnAt(cx - dx * 3.2, cz - dz * 3.2, 0.4);
+      player.body.vel.set(0, 0, 0);
+      player.yaw = Math.atan2(-dx, -dz);
+      settle(8);
+      const y0 = player.position.y;
+      sim(90, { move: { x: 0, y: 1 } });
+      const rise = player.position.y - y0;
+      if (!best || rise > best.rise) best = { rise, dx, dz };
+    }
+    return { ok: best.rise > 1.6, detail: 'best ascent ' + best.rise.toFixed(2) + 'm' };
+  });
+
+  t('player: is confined to the island bounds', () => {
+    const lim = terrain.size / 2;
+    player.spawnAt(lim - 12, lim - 12, 0);
+    player.yaw = Math.PI * 1.25;   // head for the corner
+    sim(300, { move: { x: 0, y: 1 }, sprint: true });
+    const p = player.position;
+    return { ok: Math.abs(p.x) <= lim - 3.9 && Math.abs(p.z) <= lim - 3.9,
+             detail: 'ended at ' + p.x.toFixed(1) + ',' + p.z.toFixed(1) + ' (limit ' + (lim - 4) + ')' };
+  });
+
+  t('player: damage drains shield before health', () => {
+    placeClear();
+    player.health = 100; player.shield = 0;
+    player.addShield(50);
+    player.applyDamage(30);
+    const afterFirst = [player.health, player.shield];
+    player.applyDamage(40);
+    const afterSecond = [player.health, player.shield];
+    return { ok: afterFirst[0] === 100 && afterFirst[1] === 20 && afterSecond[1] === 0 && afterSecond[0] === 80,
+             detail: 'hp/shield ' + afterFirst.join('/') + ' then ' + afterSecond.join('/') };
+  });
+
+  /* --- camera ------------------------------------------------------------ */
+  t('camera: sits behind the player at the rig distance', () => {
+    placeClear();
+    rig.enabled = true;
+    player.yaw = 0.7;
+    for (let i = 0; i < 40; i++) { rig.update(1 / 60); }
+    const cam = G.engine.camera.position;
+    const p = player.position;
+    const dist = Math.hypot(cam.x - p.x, cam.z - p.z);
+    // Camera should be on the opposite side of the player from the look vector.
+    const fwd = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+    const toCam = new THREE.Vector3(cam.x - p.x, 0, cam.z - p.z).normalize();
+    const dot = fwd.dot(toCam);
+    return { ok: dist > 1.5 && dist < 4.5 && dot < -0.5 && cam.y > p.y,
+             detail: 'dist ' + dist.toFixed(2) + 'm, behindness ' + dot.toFixed(2) };
+  });
+
+  t('camera: aiming pulls the rig in and narrows the FOV', () => {
+    placeClear();
+    rig.enabled = true;
+    G.input.override({ aim: false });
+    for (let i = 0; i < 90; i++) { G.stepSim(1); rig.update(1 / 60); }
+    const wideFov = G.engine.camera.fov, wideDist = rig.distance;
+    G.input.override({ aim: true });
+    for (let i = 0; i < 90; i++) { G.stepSim(1); rig.update(1 / 60); }
+    const adsFov = G.engine.camera.fov, adsDist = rig.distance;
+    G.input.clearOverride();
+    return { ok: adsFov < wideFov - 8 && adsDist < wideDist - 1.0,
+             detail: 'fov ' + wideFov.toFixed(1) + '->' + adsFov.toFixed(1) + ', dist ' + wideDist.toFixed(2) + '->' + adsDist.toFixed(2) };
+  });
+
+  t('camera: pulls in when a wall is behind the player', () => {
+    const rec = structures.kit.records.find((r) => r.alive && r.handles.length > 0 && r.proto === 'wall');
+    const b = rec.box;
+    const cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
+    const thin = (b.max.x - b.min.x) < (b.max.z - b.min.z);
+    const dir = thin ? [1, 0] : [0, 1];
+    // Stand just outside the wall looking away from it, so it is behind us.
+    player.spawnAt(cx - dir[0] * 1.1, cz - dir[1] * 1.1, 0);
+    player.yaw = Math.atan2(dir[0], dir[1]);
+    rig.enabled = true;
+    rig.occlusion = 1;
+    for (let i = 0; i < 30; i++) rig.update(1 / 60);
+    const occluded = rig.occlusion;
+    placeClear();
+    for (let i = 0; i < 60; i++) rig.update(1 / 60);
+    return { ok: occluded < 0.75 && rig.occlusion > 0.9,
+             detail: 'occlusion near wall ' + occluded.toFixed(2) + ', in the open ' + rig.occlusion.toFixed(2) };
+  });
+
+  /* --- physics ----------------------------------------------------------- */
+  t('physics: raycast returns the nearer of terrain and box hits', () => {
+    const rec = structures.kit.records.find((r) => r.alive && r.handles.length > 0 && r.proto === 'wall');
+    const b = rec.box;
+    const c = new THREE.Vector3((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, (b.min.z + b.max.z) / 2);
+    const thin = (b.max.x - b.min.x) < (b.max.z - b.min.z);
+    const dir = new THREE.Vector3(thin ? 1 : 0, 0, thin ? 0 : 1);
+    const origin = c.clone().addScaledVector(dir, -6);
+    const hit = physics.raycast(origin, dir, 20);
+    const okBox = hit && hit.meta && hit.meta.type === 'structure';
+    // Straight down from high above must hit terrain, not a box.
+    const down = physics.raycast(new THREE.Vector3(player.position.x, player.position.y + 40, player.position.z),
+      new THREE.Vector3(0, -1, 0), 80);
+    const okTerrain = down && down.kind === 'terrain';
+    return { ok: okBox && okTerrain,
+             detail: 'wall hit at t=' + (hit ? hit.t.toFixed(2) : 'miss') + ', downward kind=' + (down ? down.kind : 'miss') };
+  });
+
+  t('physics: line of sight is blocked by structures', () => {
+    const rec = structures.kit.records.find((r) => r.alive && r.handles.length > 0 && r.proto === 'wall');
+    const b = rec.box;
+    const c = new THREE.Vector3((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, (b.min.z + b.max.z) / 2);
+    const thin = (b.max.x - b.min.x) < (b.max.z - b.min.z);
+    const d = new THREE.Vector3(thin ? 1 : 0, 0, thin ? 0 : 1);
+    const a = c.clone().addScaledVector(d, -5), z = c.clone().addScaledVector(d, 5);
+    const blocked = !physics.lineOfSight(a, z);
+    const openA = new THREE.Vector3(player.position.x, player.position.y + 30, player.position.z);
+    const openB = openA.clone().add(new THREE.Vector3(10, 0, 0));
+    const clear = physics.lineOfSight(openA, openB);
+    return { ok: blocked && clear, detail: 'through wall blocked=' + blocked + ', open air clear=' + clear };
   });
 
   return results;
