@@ -131,6 +131,21 @@ const SURFACES = {
   },
 
   /* --- built surfaces -------------------------------------------------- */
+  /**
+   * Neutral detail for building panels. Like `ground`, this is close to white
+   * so the per-instance tint decides whether a panel reads as timber, brick,
+   * concrete or steel; that is what lets every structure on the map share one
+   * material and therefore one draw call per panel type.
+   */
+  panel(n, u, v) {
+    const macro = n.fbmTile(u * 4, v * 4, 4, 4, 3) * 0.5 + 0.5;
+    const grain = n.fbmTile(u * 34, v * 34, 34, 34, 2) * 0.5 + 0.5;
+    const streak = n.perlin2Tile(u * 3, v * 26, 3, 26) * 0.5 + 0.5;
+    const wear = smoothstep(0.72, 1.0, 1 - n.worley2(u * 7, v * 7, 7));
+    const l = 188 + macro * 34 + grain * 22 + streak * 14 - wear * 44;
+    return [l, l * 0.995, l * 0.985, macro * 0.4 + grain * 0.35 + wear * 0.25];
+  },
+
   plank(n, u, v) {
     // 6 horizontal boards with per-board tint offset and lengthwise grain.
     const boards = 6;

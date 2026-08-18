@@ -17,6 +17,7 @@ const SUITE = `async () => {
   const S = G.engine.services;
   const terrain = S.get('terrain');
   const veg = S.get('vegetation');
+  const structures = S.get('structures');
   const colliders = S.get('colliders');
   const THREE = await import('three');
   const { Colliders } = await import('/src/world/Colliders.js');
@@ -221,6 +222,120 @@ const SUITE = `async () => {
       }
     }
     return { ok: worst < 0.01, detail: 'max ground offset ' + worst.toFixed(5) + 'm' };
+  });
+
+  /* --- structures ----------------------------------------------------- */
+  t('structures: POIs are placed on land, spaced apart and named', () => {
+    const bad = [];
+    for (let i = 0; i < structures.pois.length; i++) {
+      const p = structures.pois[i];
+      if (terrain.heightAt(p.x, p.z) < SEA_LEVEL + 1) bad.push(p.name + ' in water');
+      if (!p.name) bad.push('unnamed POI');
+      for (let j = i + 1; j < structures.pois.length; j++) {
+        const q = structures.pois[j];
+        if (Math.hypot(p.x - q.x, p.z - q.z) < 40) bad.push(p.name + '/' + q.name + ' overlap');
+      }
+    }
+    return { ok: structures.pois.length >= 6 && bad.length === 0,
+             detail: structures.pois.length + ' POIs: ' + structures.pois.map((p) => p.type).join(',') + (bad.length ? ' | ' + bad.join('; ') : '') };
+  });
+
+  t('structures: POI pads are flat enough to build and fight on', () => {
+    let worst = 0, at = '';
+    for (const p of structures.pois) {
+      let mn = 1e9, mx = -1e9;
+      for (let a = 0; a < 12; a++) {
+        for (const r of [0, p.radius * 0.35, p.radius * 0.6]) {
+          const x = p.x + Math.cos(a / 12 * 6.283) * r, z = p.z + Math.sin(a / 12 * 6.283) * r;
+          const h = terrain.heightAt(x, z);
+          mn = Math.min(mn, h); mx = Math.max(mx, h);
+        }
+      }
+      if (mx - mn > worst) { worst = mx - mn; at = p.name; }
+    }
+    return { ok: worst < 3.0, detail: 'worst pad relief ' + worst.toFixed(2) + 'm at ' + at };
+  });
+
+  t('structures: every building has a roof over its footprint', () => {
+    const bad = [];
+    for (const b of structures.buildings) {
+      let covered = 0, total = 0;
+      for (let mz = 0; mz < b.d; mz++) {
+        for (let mx = 0; mx < b.w; mx++) {
+          const x = b.ox + (mx + 0.5) * 4, z = b.oz + (mz + 0.5) * 4;
+          total++;
+          const hit = colliders.raycast(x, b.top + 14, z, 0, -1, 0, 30,
+            (meta) => meta && meta.type === 'structure');
+          if (hit) covered++;
+        }
+      }
+      if (covered < total) bad.push(b.w + 'x' + b.d + ' @' + b.x.toFixed(0) + ',' + b.z.toFixed(0) + ' ' + covered + '/' + total);
+    }
+    return { ok: bad.length === 0 && structures.buildings.length > 10,
+             detail: structures.buildings.length + ' buildings' + (bad.length ? ', uncovered: ' + bad.slice(0, 5).join(' ') : '') };
+  });
+
+  t('structures: every building has at least one doorway', () => {
+    const bad = structures.buildings.filter((b) => b.doors < 1).length;
+    return { ok: bad === 0, detail: bad + ' buildings without a door' };
+  });
+
+  t('structures: panels sit above the terrain surface', () => {
+    let below = 0, n = 0;
+    for (const r of structures.kit.records) {
+      if (!r.alive || r.handle < 0) continue;
+      n++;
+      const cx = (r.box.min.x + r.box.max.x) / 2, cz = (r.box.min.z + r.box.max.z) / 2;
+      // Allow half a metre of embedding for slabs seated on the pad.
+      if (r.box.max.y < terrain.heightAt(cx, cz) - 0.6) below++;
+    }
+    return { ok: below === 0 && n > 300, detail: n + ' solid panels, ' + below + ' buried' };
+  });
+
+  t('structures: destroying a panel removes its collider and hides it', () => {
+    const kit = structures.kit;
+    const rec = kit.records.findIndex((r) => r.alive && r.handle >= 0 && r.proto === 'wall');
+    if (rec < 0) return { ok: false, detail: 'no wall panel found' };
+    const r = kit.records[rec];
+    const cx = (r.box.min.x + r.box.max.x) / 2, cy = (r.box.min.y + r.box.max.y) / 2, cz = (r.box.min.z + r.box.max.z) / 2;
+    const out = [];
+    colliders.query(cx - 0.1, cy - 0.1, cz - 0.1, cx + 0.1, cy + 0.1, cz + 0.1, out);
+    const hadCollider = out.length > 0;
+    const before = colliders.count;
+    const destroyed = kit.destroy(rec);
+    colliders.query(cx - 0.1, cy - 0.1, cz - 0.1, cx + 0.1, cy + 0.1, cz + 0.1, out);
+    const stillThere = out.some((h) => colliders.getMeta(h) === r.meta);
+    const m = new THREE.Matrix4();
+    kit.meshes.get('wall').getMatrixAt(r.idx, m);
+    const scaleZero = m.elements[0] === 0 && m.elements[5] === 0;
+    return { ok: hadCollider && destroyed && !stillThere && scaleZero && colliders.count === before - 1,
+             detail: 'colliders ' + before + ' -> ' + colliders.count };
+  });
+
+  t('structures: damage accumulates before destroying a panel', () => {
+    const kit = structures.kit;
+    const rec = kit.records.findIndex((r) => r.alive && r.handle >= 0 && r.proto === 'floor');
+    const r = kit.records[rec];
+    const hp = r.meta.maxHp;
+    const first = kit.damage(rec, hp - 10);
+    const second = kit.damage(rec, 20);
+    return { ok: first === false && second === true && !r.alive,
+             detail: 'hp ' + hp + ': survived partial, destroyed on lethal' };
+  });
+
+  t('structures: whole map of buildings stays within the panel draw budget', () => {
+    return { ok: structures.kit.meshes.size <= 14,
+             detail: structures.kit.meshes.size + ' panel draw calls for ' + structures.kit.stats.placed + ' panels' };
+  });
+
+  t('vegetation: nothing is scattered inside a POI footprint', () => {
+    let bad = 0;
+    for (const lists of veg.chunkProps.values()) {
+      for (const key of ['tree', 'pine', 'rock']) {
+        for (const p of lists[key]) if (structures.insidePoi(p.x, p.z, 0)) bad++;
+      }
+    }
+    return { ok: bad === 0, detail: bad + ' props inside a POI' };
   });
 
   return results;

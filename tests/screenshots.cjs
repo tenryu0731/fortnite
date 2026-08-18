@@ -24,6 +24,11 @@ const SCENARIOS = [
   { name: 'terrain_wide', device: 'phoneLandscape', steps: 4, scenario: 'terrain_wide' },
   { name: 'terrain_ground', device: 'phoneLandscape', steps: 4, scenario: 'terrain_ground' },
   { name: 'terrain_coast', device: 'phoneLandscape', steps: 4, scenario: 'terrain_coast' },
+  // POIs: exterior massing, interior materials and the vertical landmark.
+  { name: 'poi_town', device: 'phoneLandscape', steps: 4, scenario: 'poi_town' },
+  { name: 'poi_factory', device: 'phoneLandscape', steps: 4, scenario: 'poi_factory' },
+  { name: 'poi_tower', device: 'phoneLandscape', steps: 4, scenario: 'poi_tower' },
+  { name: 'poi_street', device: 'phoneLandscape', steps: 4, scenario: 'poi_street' },
 ];
 
 async function capture(page, scn, file) {

@@ -43,6 +43,7 @@ export class Vegetation {
     this.terrain = services.get('terrain');
     this.materials = services.get('materials');
     this.colliders = services.get('colliders');
+    this.structures = services.peek('structures') || null;
 
     this.group = new THREE.Group();
     this.group.name = 'vegetation';
@@ -134,6 +135,8 @@ export class Vegetation {
             const z = z0 + (j + rng.next()) * SPACING;
             const h = terrain.heightAt(x, z);
             if (h < SEA_LEVEL + 1.0) continue;
+            // POIs are cleared ground; scatter inside one would block doorways.
+            if (this.structures && this.structures.insidePoi(x, z, 2)) continue;
             const slope = terrain.slopeAt(x, z);
             const biome = terrain.biomeAt(x, z);
             const w = SCATTER[biome];
@@ -346,6 +349,7 @@ export class Vegetation {
         const h = terrain.heightAt(x, z);
         if (h < SEA_LEVEL + 0.8) continue;
         if (terrain.slopeAt(x, z) < 0.82) continue;
+        if (this.structures && this.structures.insidePoi(x, z, -6)) continue;
         const biome = terrain.biomeAt(x, z);
         const w = SCATTER[biome][3];
         if (w < 0.2 || ((hsh >> 16) & 255) / 255 > w * 0.92) continue;

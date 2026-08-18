@@ -76,6 +76,12 @@ export class Engine {
     for (const s of this.systems) {
       if (s.init) await s.init(this.services);
     }
+    // postInit runs after every system has initialised. Systems that must
+    // observe the finished state of an earlier system (terrain meshing waits
+    // for POI pads to flatten the height field) do their work here.
+    for (const s of this.systems) {
+      if (s.postInit) await s.postInit(this.services);
+    }
     this.resize();
   }
 

@@ -7,6 +7,7 @@ import { Colliders } from './world/Colliders.js';
 import { Terrain } from './world/Terrain.js';
 import { Sky } from './world/Sky.js';
 import { Vegetation } from './world/Vegetation.js';
+import { Structures } from './world/Structures.js';
 
 /** Query-string overrides let the harness pin seed/quality/scenario per run. */
 function queryOverrides() {
@@ -46,6 +47,7 @@ async function boot() {
 
   engine.register('sky', new Sky({ palette: opts.palette }));
   engine.register('terrain', new Terrain(opts.seed, { size: 1024 }));
+  engine.register('structures', new Structures(opts.seed, { poiCount: 9 }));
   engine.register('vegetation', new Vegetation(opts.seed));
 
   /**
@@ -64,6 +66,27 @@ async function boot() {
       const g = t.findGround(40, 60, makeRoot(opts.seed).stream('scenario'));
       return { pos: [g.x, g.y + 1.72, g.z], look: [g.x + 30, g.y + 6, g.z + 40] };
     },
+    // Frame a POI of a given type from outside, at a fixed bearing.
+    ...(() => {
+      const mk = (type, dist, height, bearing) => () => {
+        const st = engine.services.get('structures');
+        const poi = st.pois.find((p) => p.type === type) || st.pois[0];
+        const cx = poi.x + Math.cos(bearing) * dist;
+        const cz = poi.z + Math.sin(bearing) * dist;
+        return { pos: [cx, poi.y + height, cz], look: [poi.x, poi.y + 3, poi.z] };
+      };
+      return {
+        poi_town: mk('town', 46, 16, 2.4),
+        poi_factory: mk('factory', 40, 12, 0.7),
+        poi_tower: mk('tower', 30, 9, 3.9),
+        poi_farm: mk('farm', 40, 12, 1.9),
+        poi_street: () => {
+          const st = engine.services.get('structures');
+          const poi = st.pois.find((p) => p.type === 'town') || st.pois[0];
+          return { pos: [poi.x - 16, poi.y + 1.72, poi.z - 16], look: [poi.x + 10, poi.y + 4, poi.z + 10] };
+        },
+      };
+    })(),
     terrain_coast: () => {
       const t = engine.services.get('terrain');
       // Walk outward from the centre until the ground drops below sea level.
@@ -108,6 +131,8 @@ async function boot() {
         camera: engine.camera.position.toArray().map((n) => +n.toFixed(3)),
         terrain: { ...t.stats, maxHeight: +t.field.maxHeight.toFixed(2) },
         vegetation: { ...v.stats },
+        structures: { ...engine.services.get('structures').stats,
+          drawCalls: engine.services.get('structures').kit.stats.drawCalls },
         colliders: c.count,
       };
     },

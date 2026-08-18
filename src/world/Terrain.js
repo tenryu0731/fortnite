@@ -70,14 +70,16 @@ export class Terrain {
         });
       }
     }
-    // Precompute vertical bounds so frustum culling has a real bounding volume
-    // before the chunk has ever been meshed.
-    for (const c of this.chunks) this._computeBounds(c);
-
     this._buildWater();
+  }
 
-    // Seed the world with the chunks around the origin so the first rendered
-    // frame is never empty.
+  /**
+   * Meshing waits until postInit because POI placement flattens building pads
+   * into the height field during init; meshing earlier would bake the
+   * pre-flatten surface into the chunk geometry.
+   */
+  postInit() {
+    for (const c of this.chunks) this._computeBounds(c);
     this.updateLods(true);
     this.flushQueue(this.chunks.length);
   }
