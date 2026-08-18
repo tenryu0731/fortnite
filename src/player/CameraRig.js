@@ -21,9 +21,9 @@ const BASE = {
   fov: 75,
 };
 const ADS = {
-  distance: 1.55,
-  shoulder: 0.42,
-  heightOffset: 0.06,
+  distance: 1.7,
+  shoulder: 0.52,
+  heightOffset: 0.15,
   fov: 52,
 };
 const SPHERE_R = 0.28;

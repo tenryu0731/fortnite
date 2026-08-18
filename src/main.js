@@ -15,6 +15,8 @@ import { TouchInput } from './input/TouchInput.js';
 import { PlayerController } from './player/PlayerController.js';
 import { CameraRig } from './player/CameraRig.js';
 import { BuildSystem } from './build/BuildSystem.js';
+import { CombatSystem } from './combat/CombatSystem.js';
+import { makeWeapon as makeWeaponFor } from './combat/Weapons.js';
 
 /** Query-string overrides let the harness pin seed/quality/scenario per run. */
 function queryOverrides() {
@@ -65,6 +67,7 @@ async function boot() {
   engine.register('input', input);
   engine.register('player', new PlayerController({ seed: opts.seed }));
   engine.register('build', new BuildSystem());
+  engine.register('combat', new CombatSystem(opts.seed));
   engine.register('cameraRig', new CameraRig());
 
   /**
@@ -197,6 +200,17 @@ async function boot() {
       player.yaw = Math.atan2(-(poi.x - px), -(poi.z - pz));
       player.pitch = -0.04;
       player.aiming = name === 'player_ads';
+      // Arm the player so the third-person weapon model and the ADS pose are
+      // part of the visual baseline.
+      const combat = engine.services.peek('combat');
+      if (combat) {
+        combat.slots[1] = combat.slots[1] || makeWeaponFor('ar', 'legendary');
+        combat.selectSlot(1);
+        engine.services.get('player').mesh.update(0.4, {
+          speed: 0, maxSpeed: 7.2, grounded: true, crouch: false,
+          aim: name === 'player_ads', pitch: -0.04, strafe: 0, torsoYaw: 0,
+        });
+      }
       rig.enabled = true;
       rig.occlusion = 1;
       // Settle the rig's exponential smoothing to its steady state.
@@ -242,6 +256,7 @@ async function boot() {
         camera: engine.camera.position.toArray().map((n) => +n.toFixed(3)),
         player: engine.services.get('player').state(),
         build: engine.services.get('build').state(),
+        combat: engine.services.get('combat').state(),
         terrain: { ...t.stats, maxHeight: +t.field.maxHeight.toFixed(2) },
         vegetation: { ...v.stats },
         structures: { ...engine.services.get('structures').stats,

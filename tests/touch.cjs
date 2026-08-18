@@ -182,17 +182,41 @@ async function main() {
 
     {
       await reset(page);
+      // Arm a rifle so the button's effect on the weapon can be observed.
+      const before = await page.evaluate(async () => {
+        const { makeWeapon } = await import('/src/combat/Weapons.js');
+        const c = window.__GAME.engine.services.get('combat');
+        c.slots[1] = makeWeapon('ar', 'rare');
+        c.selectSlot(1);
+        c.reserveAmmo.medium = 200;
+        c.weapon.ammo = c.weapon.magSize;
+        c.weapon.cooldown = 0;
+        return c.state();
+      });
       const r = rects.fire;
       await touch(cdp, 'touchStart', [{ x: r.x, y: r.y, id: 10 }]);
       const heldDown = await page.evaluate(() => window.__GAME.input.raw().fire);
       await S(page, 4);
       const stateDuring = await page.evaluate(() => window.__GAME.input.state().fire);
+      const during = await page.evaluate(() => window.__GAME.state().combat);
       await touch(cdp, 'touchEnd', [{ x: r.x, y: r.y, id: 10 }]);
       await S(page, 2);
       const afterUp = await page.evaluate(() => window.__GAME.input.raw().fire);
       ok = check('FIRE is held while pressed and released on lift',
         heldDown === true && stateDuring === true && afterUp === false,
         `down=${heldDown} state=${stateDuring} up=${afterUp}`) && ok;
+      ok = check('FIRE actually discharges the weapon',
+        during.ammo < before.ammo && during.stats.shots > 0,
+        `ammo ${before.ammo} -> ${during.ammo}, ${during.stats.shots} shot(s)`) && ok;
+
+      // Holding fire must keep firing, bounded by the weapon's fire rate.
+      await touch(cdp, 'touchStart', [{ x: r.x, y: r.y, id: 30 }]);
+      await S(page, 60);
+      const held = await page.evaluate(() => window.__GAME.state().combat);
+      await touch(cdp, 'touchEnd', [{ x: r.x, y: r.y, id: 30 }]);
+      const fired = held.stats.shots - during.stats.shots;
+      ok = check('holding FIRE sustains automatic fire at the weapon rate',
+        fired >= 4 && fired <= 7, `${fired} shots in 1s (AR fires 5.5/s)`) && ok;
     }
 
     {
@@ -239,13 +263,29 @@ async function main() {
 
     {
       await reset(page);
+      const before = await page.evaluate(async () => {
+        const { makeWeapon } = await import('/src/combat/Weapons.js');
+        const c = window.__GAME.engine.services.get('combat');
+        c.slots[1] = makeWeapon('ar', 'common');
+        c.selectSlot(1);
+        c.reserveAmmo.medium = 200;
+        c.weapon.ammo = 4;                 // partially spent magazine
+        c.reloading = false;
+        return c.state();
+      });
       const r = rects.reload;
       await touch(cdp, 'touchStart', [{ x: r.x, y: r.y, id: 14 }]);
       const down = await page.evaluate(() => window.__GAME.input.raw().reload);
+      await S(page, 3);
+      const started = await page.evaluate(() => window.__GAME.state().combat.reloading);
       await touch(cdp, 'touchEnd', [{ x: r.x, y: r.y, id: 14 }]);
-      await S(page, 2);
-      const up = await page.evaluate(() => window.__GAME.input.raw().reload);
-      ok = check('RELOAD registers press and release', down === true && up === false) && ok;
+      await S(page, 160);                  // longer than any reload
+      const after = await page.evaluate(() => window.__GAME.state().combat);
+      ok = check('RELOAD registers press and release', down === true) && ok;
+      ok = check('RELOAD refills the magazine from reserve',
+        started === true && after.reloading === false && after.ammo === after.magSize
+        && after.reserve.medium === before.reserve.medium - (after.magSize - before.ammo),
+        `ammo ${before.ammo} -> ${after.ammo}/${after.magSize}, reserve ${before.reserve.medium} -> ${after.reserve.medium}`) && ok;
     }
 
     /* --- 5. quickbar ---------------------------------------------------- */

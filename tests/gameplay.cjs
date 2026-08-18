@@ -22,6 +22,7 @@ const SUITE = `async () => {
   const physics = S.get('physics');
   const rig = S.get('cameraRig');
   const build = S.get('build');
+  const combat = S.get('combat');
 
   // Deterministic driver: hold an input state for N fixed steps.
   const sim = (frames, input) => {
@@ -986,6 +987,328 @@ const SUITE = `async () => {
              detail: build.stats.placed + ' pieces in ' + build.kit.meshes.size + ' draw calls' };
   });
 
+  /* --- combat ------------------------------------------------------------ */
+  const { makeWeapon, falloff, partMultiplier, WEAPONS } = await import('/src/combat/Weapons.js');
+  const { rayCapsule } = await import('/src/combat/CombatSystem.js');
+
+  /** A stationary damageable stand-in, placed relative to the player. */
+  const makeDummy = (x, y, z) => {
+    const d = {
+      alive: true, health: 100, shield: 0,
+      position: new THREE.Vector3(x, y, z),
+      body: { radius: 0.36, height: 1.8, grounded: true },
+      velocity: new THREE.Vector3(),
+      damageLog: [],
+      applyDamage(amount, src) {
+        this.damageLog.push({ amount, part: src && src.part });
+        let left = amount;
+        const s = Math.min(this.shield, left); this.shield -= s; left -= s;
+        this.health = Math.max(0, this.health - left);
+        if (this.health <= 0) this.alive = false;
+        return amount;
+      },
+    };
+    combat.registerTarget(d);
+    return d;
+  };
+  const dropDummies = () => {
+    for (let i = combat.targets.length - 1; i >= 0; i--) {
+      if (!combat.targets[i].isPlayer) combat.targets.splice(i, 1);
+    }
+  };
+
+  /** Stand on clear ground with a given weapon, aiming along -Z. */
+  const armed = (id, rarity = 'common') => {
+    clearBuilds();
+    placeClear();
+    dropDummies();
+    player.yaw = 0; player.pitch = 0;
+    combat.slots = [makeWeapon('pickaxe'), makeWeapon(id, rarity), null, null, null];
+    combat.activeSlot = 1;
+    combat.reloading = false;
+    combat.reserveAmmo = { light: 200, medium: 200, shells: 200, heavy: 200 };
+    combat._syncHeld();
+    Object.assign(combat.stats, { shots: 0, hits: 0, headshots: 0, damageDealt: 0, structureHits: 0, eliminations: 0 });
+    // Aim the real camera down -Z: the player shoots along the camera axis.
+    G.engine.camera.position.set(player.position.x, player.position.y + 1.62, player.position.z + 3);
+    G.engine.camera.lookAt(player.position.x, player.position.y + 1.62, player.position.z - 20);
+    G.engine.camera.updateMatrixWorld(true);
+    return combat.weapon;
+  };
+
+  t('weapons: no class dominates on ideal-case time to kill', () => {
+    // Ideal body-shot TTK against 100 health + 100 shield at point-blank range.
+    // The absolute numbers matter less than the spread between classes: if one
+    // is far faster than the rest, it is the only weapon anyone picks up.
+    const rows = [], ttks = [];
+    for (const id of ['ar', 'smg', 'shotgun', 'sniper', 'pistol']) {
+      const def = WEAPONS[id];
+      const perShot = def.damage * (def.pellets || 1);
+      const shots = Math.ceil(200 / perShot);
+      const ttk = (shots - 1) / def.fireRate;
+      ttks.push(ttk);
+      rows.push(id + ' ' + ttk.toFixed(2) + 's/' + shots + ' shots');
+    }
+    const lo = Math.min(...ttks), hi = Math.max(...ttks);
+    const inBand = ttks.every((v) => v >= 0.8 && v <= 3.4);
+    const spread = hi / lo;
+    // A single body shot must never be lethal through full shield.
+    const oneShotBody = ['ar', 'smg', 'shotgun', 'sniper', 'pistol']
+      .filter((id) => WEAPONS[id].damage * (WEAPONS[id].pellets || 1) >= 200);
+    // A sniper headshot is meant to be, and is the only one that is.
+    const sniperHead = WEAPONS.sniper.damage * WEAPONS.sniper.headshot;
+    return { ok: inBand && spread < 3.2 && oneShotBody.length === 0 && sniperHead >= 200,
+             detail: rows.join(', ') + ' | spread x' + spread.toFixed(2)
+               + ', sniper headshot ' + sniperHead.toFixed(0) };
+  });
+
+  t('combat: firing consumes a round and respects the fire rate', () => {
+    const w = armed('ar');
+    const a0 = w.ammo;
+    combat.fire(player);
+    const a1 = w.ammo;
+    const blocked = combat.fire(player);        // still on cooldown
+    sim(Math.ceil(60 / w.def.fireRate) + 1, {});
+    const ready = combat.canFire(player);
+    return { ok: a1 === a0 - 1 && blocked === false && ready,
+             detail: 'ammo ' + a0 + '->' + a1 + ', second shot blocked=' + !blocked + ', ready after cooldown=' + ready };
+  });
+
+  t('combat: an empty magazine triggers a reload that draws from reserve', () => {
+    const w = armed('pistol');
+    w.ammo = 1;
+    combat.reserveAmmo.light = 40;
+    combat.fire(player);
+    const startedReloading = combat.reloading;
+    sim(Math.ceil(w.def.reloadTime * 60) + 4, {});
+    return { ok: startedReloading && !combat.reloading && w.ammo === w.magSize
+               && combat.reserveAmmo.light === 40 - (w.magSize - 0),
+             detail: 'reloaded to ' + w.ammo + '/' + w.magSize + ', reserve ' + combat.reserveAmmo.light };
+  });
+
+  t('combat: reloading with an empty reserve is refused', () => {
+    const w = armed('ar');
+    w.ammo = 3;
+    combat.reserveAmmo.medium = 0;
+    const started = combat.beginReload();
+    return { ok: started === false && !combat.reloading, detail: 'beginReload returned ' + started };
+  });
+
+  t('combat: a hitscan shot damages a target down range', () => {
+    armed('ar');
+    const p = player.position;
+    const d = makeDummy(p.x, p.y, p.z - 12);
+    combat.fire(player);
+    const dealt = 100 - d.health;
+    return { ok: d.damageLog.length === 1 && dealt > 20 && dealt < 60,
+             detail: 'dealt ' + dealt + ' at 12m (' + (d.damageLog[0] || {}).part + ')' };
+  });
+
+  t('combat: hits are graded by body part', () => {
+    // The camera fires horizontally from 1.62m above the player's feet, so a
+    // dummy's base height decides which part the ray passes through.
+    const shoot = (baseOffset) => {
+      armed('ar');                       // hitscan: resolves within the call
+      const p = player.position;
+      const d = makeDummy(p.x, p.y + baseOffset, p.z - 14);
+      combat.fire(player);
+      const e = d.damageLog[0];
+      dropDummies();
+      return e ? { part: e.part, dmg: e.amount } : { part: '-', dmg: 0 };
+    };
+    const head = shoot(0);        // ray at 0.90 of body height
+    const body = shoot(0.72);     // ray at 0.50
+    const legs = shoot(1.20);     // ray at 0.23
+    return { ok: head.part === 'head' && body.part === 'body' && legs.part === 'legs'
+               && head.dmg > body.dmg && body.dmg > legs.dmg,
+             detail: 'head ' + head.dmg + ', body ' + body.dmg + ', legs ' + legs.dmg };
+  });
+
+  t('combat: distance falloff reduces damage', () => {
+    const near = falloff(WEAPONS.smg, 10);
+    const mid = falloff(WEAPONS.smg, 60);
+    const far = falloff(WEAPONS.smg, 200);
+    return { ok: near === 1 && mid < near && mid > far && far === WEAPONS.smg.falloffMin,
+             detail: '10m x' + near.toFixed(2) + ', 60m x' + mid.toFixed(2) + ', 200m x' + far.toFixed(2) };
+  });
+
+  t('combat: a shotgun fires all of its pellets in one shot', () => {
+    armed('shotgun');
+    const p = player.position;
+    const d = makeDummy(p.x, p.y, p.z - 5);
+    combat.fire(player);
+    return { ok: d.damageLog.length >= 6 && d.damageLog.length <= WEAPONS.shotgun.pellets,
+             detail: d.damageLog.length + ' of ' + WEAPONS.shotgun.pellets + ' pellets connected at 5m' };
+  });
+
+  t('combat: a wall between shooter and target stops the shot', () => {
+    armed('ar');
+    const p = player.position;
+    const d = makeDummy(p.x, p.y, p.z - 14);
+    // Build a wall in the way.
+    build.setPiece(0); build.setMaterial('brick');
+    build.resources.brick = 500;
+    player.pitch = -0.1;
+    sim(4, { buildMode: true, buildPiece: 0, fire: true });
+    const placed = build.stats.placed;
+    player.pitch = 0;
+    G.engine.camera.position.set(p.x, p.y + 1.62, p.z + 3);
+    G.engine.camera.lookAt(p.x, p.y + 1.62, p.z - 20);
+    G.engine.camera.updateMatrixWorld(true);
+    const hpBefore = build.kit.records.find((r) => r.alive).meta.hp;
+    combat.fire(player);
+    const hpAfter = build.kit.records.find((r) => r.alive).meta.hp;
+    return { ok: placed === 1 && d.damageLog.length === 0 && hpAfter < hpBefore,
+             detail: 'target untouched, wall hp ' + hpBefore + ' -> ' + hpAfter };
+  });
+
+  t('combat: bullets damage structures at the structure multiplier', () => {
+    armed('ar');
+    const rec = structures.kit.records.find((r) => r.alive && r.handles.length > 0 && r.proto === 'wall');
+    const b = rec.box;
+    const c = new THREE.Vector3((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, (b.min.z + b.max.z) / 2);
+    const thin = (b.max.x - b.min.x) < (b.max.z - b.min.z);
+    const dir = new THREE.Vector3(thin ? 1 : 0, 0, thin ? 0 : 1);
+    player.spawnAt(c.x - dir.x * 5, c.z - dir.z * 5, 0);
+    player.body.pos.y = c.y - 1.62;
+    const eye = c.clone().addScaledVector(dir, -5);
+    G.engine.camera.position.copy(eye);
+    G.engine.camera.lookAt(c);
+    G.engine.camera.updateMatrixWorld(true);
+    const hp0 = rec.meta.hp;
+    combat.fire(player);
+    const applied = hp0 - rec.meta.hp;
+    const expected = Math.round(combat.weapon.damage * WEAPONS.ar.structureMult);
+    return { ok: applied === expected && combat.stats.structureHits === 1,
+             detail: 'applied ' + applied + ', expected ' + expected + ' (x' + WEAPONS.ar.structureMult + ')' };
+  });
+
+  t('combat: the pickaxe harvests wood from a tree', () => {
+    clearBuilds();
+    // Find a tree and stand next to it.
+    let tree = null;
+    for (const lists of veg.chunkProps.values()) { if (lists.tree.length) { tree = lists.tree[0]; break; } }
+    if (!tree) return { ok: false, detail: 'no tree in the world' };
+    combat.slots[0] = makeWeapon('pickaxe');
+    combat.activeSlot = 0;
+    combat.weapon.cooldown = 0;
+    player.spawnAt(tree.x, tree.z - 2.0, 0);
+    player.body.pos.y = tree.y;
+    const eye = new THREE.Vector3(tree.x, tree.y + 1.4, tree.z - 2.0);
+    G.engine.camera.position.copy(eye);
+    G.engine.camera.lookAt(tree.x, tree.y + 1.4, tree.z);
+    G.engine.camera.updateMatrixWorld(true);
+    const wood0 = build.resources.wood;
+    combat.fire(player);
+    const gained = build.resources.wood - wood0;
+    return { ok: gained > 0, detail: 'gained ' + gained + ' wood from one swing' };
+  });
+
+  t('combat: aiming tightens the cone and movement widens it', () => {
+    const w = armed('ar');
+    player.aiming = false;
+    player.body.vel.set(0, 0, 0);
+    const still = combat.currentSpread(w, player);
+    player.body.vel.set(0, 0, -7);
+    const moving = combat.currentSpread(w, player);
+    player.body.vel.set(0, 0, 0);
+    player.aiming = true;
+    const ads = combat.currentSpread(w, player);
+    player.aiming = false;
+    // Sustained fire should widen it further.
+    w.bloom = w.def.bloom * 2;
+    const bloomed = combat.currentSpread(w, player);
+    w.bloom = 0;
+    return { ok: moving > still && ads < still && bloomed > still,
+             detail: 'still ' + still.toFixed(4) + ', moving ' + moving.toFixed(4)
+               + ', ads ' + ads.toFixed(4) + ', bloomed ' + bloomed.toFixed(4) };
+  });
+
+  t('combat: firing applies the recoil pattern to the camera', () => {
+    armed('ar');
+    rig.recoilPitch = 0; rig.recoilYaw = 0;
+    combat.fire(player);
+    const p1 = rig.recoilPitch;
+    combat.weapon.cooldown = 0;
+    combat.fire(player);
+    const p2 = rig.recoilPitch;
+    // Recoil decays back toward zero.
+    for (let i = 0; i < 120; i++) rig.update(1 / 60);
+    return { ok: p1 > 0 && p2 > p1 && Math.abs(rig.recoilPitch) < p1 * 0.2,
+             detail: 'kick ' + p1.toFixed(4) + ' -> ' + p2.toFixed(4) + ', decayed to ' + rig.recoilPitch.toFixed(5) };
+  });
+
+  t('combat: sniper rounds travel over time rather than hitting instantly', () => {
+    armed('sniper');
+    // Fire high above the ground so the shot is not stopped by terrain on the
+    // way — this test is about flight time, not about line of sight.
+    const p = player.position.clone();
+    player.spawnAt(p.x, p.z, 80);
+    const shotY = player.position.y + 1.62;
+    const d = makeDummy(p.x, player.position.y, p.z - 110);
+    G.engine.camera.position.set(p.x, shotY, p.z + 2);
+    G.engine.camera.lookAt(p.x, shotY, p.z - 110);
+    G.engine.camera.updateMatrixWorld(true);
+
+    combat.fire(player);
+    const immediate = d.damageLog.length;
+    const inFlight = combat.projectiles.length;
+    const startZ = combat.projectiles[0] ? combat.projectiles[0].pos.z : 0;
+    // Six frames of flight at 220 m/s should cover roughly 22 metres.
+    for (let i = 0; i < 6; i++) combat._stepProjectiles(1 / 60);
+    const movedZ = combat.projectiles[0] ? startZ - combat.projectiles[0].pos.z : 0;
+    for (let i = 0; i < 120 && combat.projectiles.length; i++) combat._stepProjectiles(1 / 60);
+    const landed = d.damageLog.length;
+    return { ok: immediate === 0 && inFlight === 1 && movedZ > 15 && movedZ < 30 && landed === 1,
+             detail: 'instant hits ' + immediate + ', travelled ' + movedZ.toFixed(1)
+               + 'm in 0.1s, connected ' + landed + ' time(s)' };
+  });
+
+  t('combat: switching slots swaps the weapon and cancels a reload', () => {
+    armed('ar');
+    combat.slots[2] = makeWeapon('smg', 'rare');
+    combat.weapon.ammo = 2;
+    combat.beginReload();
+    const wasReloading = combat.reloading;
+    combat.selectSlot(2);
+    return { ok: wasReloading && !combat.reloading && combat.weapon.id === 'smg'
+               && combat.weapon.rarity === 'rare' && combat.held.mesh.visible,
+             detail: 'now holding ' + combat.weapon.id + ' (' + combat.weapon.rarity + '), reload cancelled' };
+  });
+
+  t('combat: rarity scales damage', () => {
+    const common = makeWeapon('ar', 'common');
+    const legendary = makeWeapon('ar', 'legendary');
+    return { ok: legendary.damage > common.damage && legendary.damage / common.damage < 1.35,
+             detail: 'common ' + common.damage.toFixed(1) + ' vs legendary ' + legendary.damage.toFixed(1) };
+  });
+
+  t('combat: capsule raycast hits the body, misses beside it, and reports height', () => {
+    const base = new THREE.Vector3(0, 0, 0);
+    const dir = new THREE.Vector3(0, 0, -1);
+    const chest = rayCapsule(new THREE.Vector3(0, 1.0, 10), dir, base, 0.36, 1.8, 50);
+    const head = rayCapsule(new THREE.Vector3(0, 1.7, 10), dir, base, 0.36, 1.8, 50);
+    const beside = rayCapsule(new THREE.Vector3(1.2, 1.0, 10), dir, base, 0.36, 1.8, 50);
+    const above = rayCapsule(new THREE.Vector3(0, 3.0, 10), dir, base, 0.36, 1.8, 50);
+    const short = rayCapsule(new THREE.Vector3(0, 1.0, 10), dir, base, 0.36, 1.8, 5);
+    const parts = [
+      chest && partMultiplier(WEAPONS.ar, (chest.y - 0) / 1.8).part,
+      head && partMultiplier(WEAPONS.ar, (head.y - 0) / 1.8).part,
+    ];
+    return { ok: !!chest && !!head && !beside && !above && !short
+               && parts[0] === 'body' && parts[1] === 'head',
+             detail: 'chest=' + parts[0] + ' head=' + parts[1] + ', side miss=' + !beside
+               + ', over-top miss=' + !above + ', range-limited miss=' + !short };
+  });
+
+  t('combat: a shooter cannot hit itself', () => {
+    armed('ar');
+    const before = player.health;
+    for (let i = 0; i < 5; i++) { combat.weapon.cooldown = 0; combat.fire(player); }
+    return { ok: player.health === before, detail: 'player health unchanged at ' + player.health };
+  });
+
+  dropDummies();
   clearBuilds();
 
   return results;

@@ -155,8 +155,10 @@ export class CharacterMesh {
 
     // Arms: counter-swing when running, raised and forward when aiming.
     const runArm = -swing * amp * 0.75;
-    const aimArmR = -1.42 - (p.pitch || 0) * 0.8;
-    const aimArmL = -1.15 - (p.pitch || 0) * 0.8;
+    // Raise the weapon arm to just under horizontal: raising it fully puts the
+    // barrel across the character's own head from the over-shoulder camera.
+    const aimArmR = -1.24 - (p.pitch || 0) * 0.9;
+    const aimArmL = -1.02 - (p.pitch || 0) * 0.9;
     this.armR.rotation.x = runArm * (1 - this.aimBlend) + aimArmR * this.aimBlend;
     this.armL.rotation.x = -runArm * (1 - this.aimBlend) + aimArmL * this.aimBlend;
     this.armR.rotation.z = -0.10 - this.aimBlend * 0.12 + this.airBlend * -0.5;
