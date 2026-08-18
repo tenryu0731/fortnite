@@ -29,6 +29,10 @@ const SUITE = `async () => {
   const storm = S.get('storm');
   const loot = S.get('loot');
   const match = S.get('match');
+  const hud = S.get('hud');
+  const minimap = S.get('minimap');
+  const damageNumbers = S.get('damageNumbers');
+  const screens = S.get('screens');
 
   // A real session boots straight into a match, which parks the player on the
   // battle bus and overwrites their position every step. Every suite before the
@@ -37,6 +41,10 @@ const SUITE = `async () => {
   match.state = 0;                 // MATCH.IDLE
   match.busMesh.visible = false;
   storm.active = false;
+
+  // A real session also opens behind the start screen, which suspends gameplay
+  // input. Dismiss it so the suite drives a live, playable world.
+  screens.show(null);
 
   // Bots are live from world init and will shoot the player during any
   // simulated frames, so the opposing team is parked too.
@@ -1664,7 +1672,10 @@ const SUITE = `async () => {
     const walledDamage = 100 - player.health;
 
     return { ok: placed === 1 && openDamage > 0 && walledDamage === 0,
-             detail: 'open line of sight ' + openDamage + ' damage, behind a wall ' + walledDamage };
+             detail: 'placed=' + placed + ', open line of sight ' + openDamage
+               + ' damage, behind a wall ' + walledDamage + ', live builds=' + build.kit.records.filter((r) => r.alive).length
+               + ', reason=' + build.preview.reason + ', valid=' + build.preview.valid
+               + ', metal=' + build.resources.metal + ', inputEnabled=' + G.engine.services.get('input').enabled };
   });
 
   t('bots: damage reduces health, then eliminates and reports it', () => {
@@ -1672,7 +1683,7 @@ const SUITE = `async () => {
     const b = bots.bots[3];
     b.alive = true; b.health = 100; b.shield = 40;
     const events = [];
-    const off = G.engine.bus.on('entity:eliminated', (e) => events.push(e));
+    const off = G.engine.bus.on('entity:eliminated', (e) => { if (e.entity === b) events.push(e); });
     b.applyDamage(30, { shooter: player });
     const afterShield = [b.health, b.shield];
     b.applyDamage(200, { shooter: player });
@@ -1680,7 +1691,8 @@ const SUITE = `async () => {
     off();
     return { ok: afterShield[0] === 100 && afterShield[1] === 10 && !b.alive
                && events.length === 1 && events[0].entity === b,
-             detail: 'shield absorbed first hit (' + afterShield.join('/') + '), elimination event fired' };
+             detail: 'shield ' + afterShield.join('/') + ', ' + events.length + ' elimination event(s), correct entity='
+               + (events.length ? String(events[0].entity === b) : 'n/a') };
   });
 
   t('bots: being shot makes a bot look for the shooter', () => {
@@ -1769,6 +1781,11 @@ const SUITE = `async () => {
     return { ok: !b.alive && combat.stats.eliminations === kills0 + 1,
              detail: 'bot down, player eliminations ' + kills0 + ' -> ' + combat.stats.eliminations };
   });
+
+  // Park the team again: the sections below test the player against a quiet
+  // world, and a live firefight would kill them mid-assertion.
+  for (const b of bots.bots) b.alive = false;
+  bots.aliveCount = 0;
 
   /* --- storm -------------------------------------------------------------- */
   const { Storm } = await import('/src/game/Storm.js');
@@ -1874,7 +1891,10 @@ const SUITE = `async () => {
     const taken = combat.slots.filter((x) => x && x.id === 'ar').length;
     const gone = !loot.items.includes(item);
     return { ok: passive === 0 && prompt && taken === 1 && gone,
-             detail: 'proximity alone left it on the ground; interact took it (' + taken + ' in inventory)' };
+             detail: 'passive=' + passive + ', prompt=' + (loot.nearest ? loot.nearest.kind : 'none')
+               + ', taken=' + taken + ', removed=' + gone + ', alive=' + player.alive
+               + ', inputEnabled=' + G.engine.services.get('input').enabled
+               + ', screen=' + screens.current + ', pickedUp=' + loot.stats.pickedUp };
   });
 
   t('loot: opening a chest spawns several items', () => {
@@ -1890,8 +1910,10 @@ const SUITE = `async () => {
     sim(2, { interact: true });
     const spawned = loot.stats.spawned - before;
     return { ok: prompt && chest.opened && spawned >= 3,
-             detail: 'chest opened, ' + spawned + ' items spawned ('
-               + (loot.items.length) + ' still on the ground after auto-pickup)' };
+             detail: 'prompt=' + (prompt ? 'chest' : 'none') + ', opened=' + chest.opened
+               + ', spawned=' + spawned + ', ' + loot.items.length + ' on the ground'
+               + ', alive=' + player.alive + ', nearest=' + (loot.nearest ? loot.nearest.kind : 'null')
+               + ', inputEnabled=' + G.engine.services.get('input').enabled };
   });
 
   t('loot: the whole loot layer costs two draw calls', () => {
@@ -2059,8 +2081,302 @@ const SUITE = `async () => {
                + ' elims, ' + r.damage + ' damage, ' + (r.accuracy * 100).toFixed(0) + '% accuracy' };
   });
 
-  reviveAll();
-  bots.spawnAll();
+  /* --- HUD ---------------------------------------------------------------- */
+  // The match section ends in the result screen, which hides the HUD. Every
+  // HUD assertion starts by dismissing any screen so the layer is live.
+  const hudReady = () => {
+    // Drain twice: a handler that queues during a flush (the match result is
+    // queued from the elimination handler) only lands on the following one.
+    G.engine.bus.flush();
+    G.engine.bus.flush();
+    screens.show(null);
+    hud.setVisible(true);
+    minimap.setVisible(true);
+  };
+  hudReady();
+
+  t('hud: vitals, materials and ammo mirror game state', () => {
+    placeClear();
+    hudReady();
+    player.health = 63; player.shield = 41;
+    build.resources = { wood: 271, brick: 88, metal: 305 };
+    combat.slots[1] = makeWeapon('smg', 'epic');
+    combat.selectSlot(1);
+    combat.weapon.ammo = 12;
+    combat.reserveAmmo.light = 96;
+    hud.update(1 / 60);
+    const s1 = hud.snapshot();
+    return { ok: s1.health === '63' && s1.shield === '41' && s1.materials.wood === '271'
+               && s1.materials.brick === '88' && s1.materials.metal === '305'
+               && s1.ammo === '12/96' && s1.rarity === 'epic' && s1.weapon === 'SMG',
+             detail: s1.health + 'hp/' + s1.shield + 'sh, mats ' + Object.values(s1.materials).join('/')
+               + ', ' + s1.weapon + ' (' + s1.rarity + ') ' + s1.ammo
+ };
+  });
+
+  t('hud: only writes to the DOM when a value changes', () => {
+    // A HUD that rewrites every frame is what makes DOM HUDs stutter on phones.
+    // Freeze everything that legitimately animates (weapon bloom, movement,
+    // the low-health pulse, the storm clock) so the only thing under test is
+    // whether an unchanged value still touches the DOM.
+    hudReady();
+    placeClear();
+    player.health = 90; player.shield = 50;
+    player.body.vel.set(0, 0, 0);
+    player.aiming = false;
+    combat.selectSlot(0);
+    if (combat.weapon) combat.weapon.bloom = 0;
+    storm.active = false;
+    build.active = false;
+    hud._damageFlashTimer = 0;      // the hurt vignette fades over ~0.45s
+
+    hud.update(1 / 60);
+    const before = JSON.stringify(hud.cache);
+    for (let i = 0; i < 10; i++) hud.update(1 / 60);
+    const afterIdle = JSON.stringify(hud.cache);
+
+    player.health = 12;
+    hud.update(1 / 60);
+    const afterChange = JSON.stringify(hud.cache);
+    player.health = 100;
+
+    // Name the offending fields when the cache does drift, so a regression here
+    // says which readout is misbehaving.
+    let drift = '';
+    if (before !== afterIdle) {
+      const a = JSON.parse(before), b = JSON.parse(afterIdle);
+      drift = Object.keys(b).filter((k) => a[k] !== b[k]).map((k) => k + ':' + a[k] + '->' + b[k]).join(' ');
+    }
+    return { ok: before === afterIdle && afterChange !== afterIdle,
+             detail: drift ? 'drifted: ' + drift
+               : 'cache stable across 10 idle frames, updated on a real change' };
+  });
+
+  t('hud: low health and low ammo are flagged', () => {
+    hudReady();
+    // A real magazine weapon: the pickaxe has no ammo to run low on.
+    combat.slots[1] = makeWeapon('ar', 'common');
+    combat.selectSlot(1);
+    player.health = 18;
+    combat.weapon.ammo = 2;
+    hud.update(1 / 60);
+    const low = hud.healthBar.classList.contains('low') && hud.ammoBox.classList.contains('low');
+    player.health = 90;
+    combat.weapon.ammo = combat.weapon.magSize;
+    hud.update(1 / 60);
+    const clear = !hud.healthBar.classList.contains('low') && !hud.ammoBox.classList.contains('low');
+    return { ok: low && clear, detail: 'flagged at 18hp/2 rounds, cleared at 90hp/full' };
+  });
+
+  t('hud: the crosshair gap tracks the actual bullet cone', () => {
+    hudReady();
+    combat.slots[1] = makeWeapon('ar', 'common');
+    combat.selectSlot(1);
+    player.aiming = false;
+    player.body.vel.set(0, 0, 0);
+    combat.weapon.bloom = 0;
+    hud.update(1 / 60);
+    const still = parseFloat(hud.snapshot().crossGap);
+    combat.weapon.bloom = combat.weapon.def.bloom * 3;
+    hud.update(1 / 60);
+    const bloomed = parseFloat(hud.snapshot().crossGap);
+    combat.weapon.bloom = 0;
+    player.aiming = true;
+    hud.update(1 / 60);
+    const ads = parseFloat(hud.snapshot().crossGap);
+    player.aiming = false;
+    return { ok: bloomed > still && ads < still,
+             detail: 'still ' + still + 'px, firing ' + bloomed + 'px, aiming ' + ads + 'px' };
+  });
+
+  t('hud: eliminations appear in the kill feed', () => {
+    hudReady();
+    hud.killfeed.length = 0;
+    const victim = bots.bots[5];
+    victim.alive = true;
+    victim.applyDamage(1e9, { shooter: player });
+    G.engine.bus.flush();
+    hud.update(1 / 60);
+    const feed = hud.snapshot().killfeed;
+    return { ok: feed.length === 1 && feed[0].includes('YOU eliminated'),
+             detail: feed.join(' | ') };
+  });
+
+  t('hud: the kill feed expires and is capped', () => {
+    hudReady();
+    hud.killfeed.length = 0;
+    for (let i = 0; i < 9; i++) {
+      hud.killfeed.unshift({ text: 'row ' + i, ttl: 4.5, mine: false });
+      if (hud.killfeed.length > 4) hud.killfeed.length = 4;
+    }
+    const capped = hud.killfeed.length;
+    for (let i = 0; i < 400; i++) hud.update(1 / 60);   // 6.7s
+    return { ok: capped === 4 && hud.killfeed.length === 0,
+             detail: 'capped at ' + capped + ' rows, all expired after 6.7s' };
+  });
+
+  t('hud: build readout shows the piece, material and rejection reason', () => {
+    hudReady();
+    buildStance(2, 0);
+    build.setMaterial('brick');
+    build.resources.brick = 500;
+    sim(2, { buildMode: true, buildPiece: 2 });
+    hud.update(1 / 60);
+    const on = hud.snapshot();
+    build.resources.brick = 0;
+    build.computeTarget();
+    hud.update(1 / 60);
+    const rejected = hud.buildState.textContent;
+    sim(2, {});
+    hud.update(1 / 60);
+    const off = hud.snapshot();
+    return { ok: on.buildVisible && on.buildMaterial === 'BRICK' && on.buildPiece === 'RAMP'
+               && rejected === 'NOT ENOUGH MATERIAL' && !off.buildVisible,
+             detail: on.buildMaterial + '/' + on.buildPiece + ', rejection: "' + rejected + '", hidden out of build mode' };
+  });
+
+  t('hud: the storm state drives the timer and the in-storm warning', () => {
+    hudReady();
+    storm.start();
+    storm.centre.set(0, 0);
+    storm.radius = 30;
+    storm.state = 1;                 // shrinking
+    storm.shrinkDuration = 60;
+    storm.timer = 95;
+    player.spawnAt(0, 0, 0);
+    hud.update(1 / 60);
+    const inside = hud.snapshot();
+    player.spawnAt(300, 300, 0);
+    hud.update(1 / 60);
+    const outside = hud.snapshot();
+    storm.active = false;
+    return { ok: inside.stormTime === '01:35' && !inside.inStorm && outside.inStorm,
+             detail: 'timer ' + inside.stormTime + ', in-storm warning off inside and on outside' };
+  });
+
+  t('hud: the pickup prompt follows the nearest interactable', () => {
+    hudReady();
+    placeClear();
+    loot.items.length = 0;
+    hud.update(1 / 60);
+    const none = hud.snapshot().prompt;
+    const p = player.position;
+    loot.spawnWeapon(p.x + 0.6, p.y + 0.5, p.z, 'shotgun', 'rare');
+    sim(3, {});
+    hud.update(1 / 60);
+    const shown = hud.snapshot().prompt;
+    loot.items.length = 0;
+    sim(3, {});
+    hud.update(1 / 60);
+    return { ok: none === '' && shown.startsWith('PICK UP') && hud.snapshot().prompt === '',
+             detail: 'prompt: "' + shown + '"' };
+  });
+
+  /* --- damage numbers ------------------------------------------------------ */
+  t('damage numbers: a hit spawns a number that rises and expires', () => {
+    damageNumbers.clear();
+    const p = player.position;
+    G.engine.camera.position.set(p.x, p.y + 1.6, p.z + 4);
+    G.engine.camera.lookAt(p.x, p.y + 1.6, p.z - 10);
+    G.engine.camera.updateMatrixWorld(true);
+    damageNumbers.spawn({ x: p.x, y: p.y + 1.6, z: p.z - 8 }, 47, 'body');
+    damageNumbers.update(0.05);
+    const live = damageNumbers.live.length;
+    const t0 = damageNumbers.live[0].el.style.transform;
+    damageNumbers.update(0.4);
+    const t1 = damageNumbers.live[0].el.style.transform;
+    for (let i = 0; i < 40; i++) damageNumbers.update(1 / 30);
+    return { ok: live === 1 && t0 !== t1 && damageNumbers.live.length === 0
+               && damageNumbers.free.length === 24,
+             detail: 'spawned, moved, expired and returned to the pool' };
+  });
+
+  t('damage numbers: headshots are styled differently', () => {
+    damageNumbers.clear();
+    const p = player.position;
+    const body = damageNumbers.spawn({ x: p.x, y: p.y + 1, z: p.z - 6 }, 30, 'body');
+    const head = damageNumbers.spawn({ x: p.x + 1, y: p.y + 1, z: p.z - 6 }, 75, 'head');
+    const ok = !body.el.classList.contains('head') && head.el.classList.contains('head')
+      && body.el.textContent === '30' && head.el.textContent === '75';
+    damageNumbers.clear();
+    return { ok, detail: 'body "' + body.el.textContent + '", head "' + head.el.textContent + '" (styled)' };
+  });
+
+  t('damage numbers: the pool never grows', () => {
+    damageNumbers.clear();
+    const total = damageNumbers.free.length;
+    const p = player.position;
+    for (let i = 0; i < 200; i++) damageNumbers.spawn({ x: p.x, y: p.y + 1, z: p.z - 5 }, 10, 'body');
+    const nodes = damageNumbers.layer.children.length;
+    damageNumbers.clear();
+    return { ok: nodes === total && damageNumbers.live.length === 0,
+             detail: '200 spawns reused ' + nodes + ' DOM nodes' };
+  });
+
+  /* --- minimap -------------------------------------------------------------- */
+  t('minimap: bakes the island once and redraws at a fixed rate', () => {
+    hudReady();
+    const baked = !!minimap.island && minimap.island.width === 256;
+    let draws = 0;
+    const orig = minimap.draw.bind(minimap);
+    minimap.draw = () => { draws++; };
+    for (let i = 0; i < 60; i++) minimap.update(1 / 60);   // one second
+    minimap.draw = orig;
+    return { ok: baked && draws >= 10 && draws <= 14,
+             detail: 'island baked at ' + minimap.island.width + 'px, ' + draws + ' redraws in 1s (target 12)' };
+  });
+
+  t('minimap: renders without error and shows the local POI name', () => {
+    const poi = structures.pois[0];
+    player.spawnAt(poi.x, poi.z, 0);
+    minimap.draw();
+    const label = minimap.label.textContent;
+    player.spawnAt(0, 0, 0);
+    minimap.draw();
+    return { ok: label === poi.name,
+             detail: 'standing in ' + poi.name + ' -> label "' + label + '"' };
+  });
+
+  /* --- screens ---------------------------------------------------------------- */
+  t('screens: showing a screen suspends gameplay input', () => {
+    screens.show('start');
+    const gated = !G.engine.services.get('input').enabled;
+    screens.show(null);
+    const released = G.engine.services.get('input').enabled;
+    return { ok: gated && released,
+             detail: 'input disabled behind a screen, re-enabled on dismiss' };
+  });
+
+  t('screens: the result card reports the match summary', () => {
+    screens.showResult({ victory: false, placement: 7, players: 25, eliminations: 3,
+      damage: 812, accuracy: 0.337, chests: 4, distance: 1290, time: 366 });
+    const s1 = screens.snapshot();
+    const html = screens.resultStats.textContent;
+    screens.show(null);
+    return { ok: s1.current === 'result' && s1.resultTitle === 'ELIMINATED'
+               && s1.resultPlacement.includes('#7') && html.includes('34%') && html.includes('812')
+               && html.includes('6:06'),
+             detail: s1.resultTitle + ' ' + s1.resultPlacement + ', stats include accuracy and survival time' };
+  });
+
+  t('screens: a victory reads differently from a defeat', () => {
+    screens.showResult({ victory: true, placement: 1, players: 25, eliminations: 9,
+      damage: 2100, accuracy: 0.5, chests: 7, distance: 2400, time: 500 });
+    const win = screens.snapshot();
+    const styled = screens.resultTitle.classList.contains('victory');
+    screens.show(null);
+    return { ok: win.resultTitle === 'VICTORY ROYALE' && styled,
+             detail: 'title "' + win.resultTitle + '", victory styling applied' };
+  });
+
+  t('ui: hiding the UI hides the HUD, minimap and controls together', () => {
+    G.debug.setUiVisible(false);
+    const hidden = hud.root.classList.contains('hidden') && minimap.wrap.classList.contains('hidden');
+    G.debug.setUiVisible(true);
+    const shown = !hud.root.classList.contains('hidden') && !minimap.wrap.classList.contains('hidden');
+    return { ok: hidden && shown, detail: 'all UI layers toggle together' };
+  });
+
   dropDummies();
   clearBuilds();
   fx.clear();

@@ -158,6 +158,11 @@ export class MatchDirector {
   }
 
   onEliminated(e) {
+    // Eliminations only conclude a match that is actually running. Without
+    // this guard, any death outside a match — a test harness, a sandbox, a
+    // restart in progress — pops the result screen and suspends input for a
+    // match that was never started.
+    if (this.state !== MATCH.BUS && this.state !== MATCH.DEPLOY && this.state !== MATCH.PLAYING) return;
     if (e.isPlayer) {
       // Placement is however many were still standing when the player fell.
       this.placement = this.bots.aliveCount + 1;
@@ -173,7 +178,7 @@ export class MatchDirector {
   }
 
   _finish(victory) {
-    if (this.state === MATCH.RESULT) return;
+    if (this.state === MATCH.RESULT || this.state === MATCH.IDLE) return;
     this.stats.matchTime = this.elapsed;
     this.stats.damage = this.combat.stats.damageDealt;
     this.stats.distance = this.player.stats.distance;

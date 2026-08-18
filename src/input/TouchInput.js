@@ -472,7 +472,12 @@ export class TouchInput {
     if (el) el.querySelector('.tbtn-label').textContent = label;
   }
 
-  setVisible(v) { this.layerEl.classList.toggle('hidden', !v); }
+  setVisible(v) {
+    this.layerEl.classList.toggle('hidden', !v);
+    // Rectangles measured while the layer was display:none are all empty and
+    // every control is skipped, so the cache must be rebuilt on the way back.
+    this._rects = null;
+  }
 
   /** Debug snapshot for the touch test suite. */
   debugState() {

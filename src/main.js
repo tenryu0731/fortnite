@@ -22,6 +22,10 @@ import { BotManager } from './ai/BotManager.js';
 import { Storm } from './game/Storm.js';
 import { Loot } from './game/Loot.js';
 import { MatchDirector } from './game/MatchDirector.js';
+import { Hud } from './ui/Hud.js';
+import { Minimap } from './ui/Minimap.js';
+import { DamageNumbers } from './ui/DamageNumbers.js';
+import { Screens } from './ui/Screens.js';
 import { AudioSystem } from './audio/AudioSystem.js';
 import { makeWeapon as makeWeaponFor } from './combat/Weapons.js';
 
@@ -81,6 +85,10 @@ async function boot() {
   engine.register('loot', new Loot(opts.seed));
   engine.register('fx', new FxSystem(opts.seed));
   engine.register('match', new MatchDirector(opts.seed));
+  engine.register('hud', new Hud());
+  engine.register('minimap', new Minimap());
+  engine.register('damageNumbers', new DamageNumbers());
+  engine.register('screens', new Screens());
   engine.register('cameraRig', new CameraRig());
 
   /**
@@ -128,6 +136,8 @@ async function boot() {
     fx_combat: () => null,
     bots_squad: () => null,
     storm_edge: () => null,
+    hud_full: () => null,
+    screen_result: () => null,
     match_loot: () => null,
     terrain_coast: () => {
       const t = engine.services.get('terrain');
@@ -400,6 +410,90 @@ async function boot() {
       return true;
     }
 
+    // HUD scenario: a mid-match state with every readout populated.
+    if (name === 'hud_full') {
+      const t = engine.services.get('terrain');
+      const player = engine.services.get('player');
+      const combat = engine.services.get('combat');
+      const bld = engine.services.get('build');
+      const st = engine.services.get('storm');
+      const botMgr = engine.services.get('bots');
+      const hud = engine.services.get('hud');
+      const rig = engine.services.get('cameraRig');
+      const screens = engine.services.get('screens');
+      const g = findClearGround(-60, 120);
+
+      screens.show(null);
+      player.spawnAt(g.x, g.z, 0);
+      player.yaw = 0.6; player.pitch = -0.02;
+      player.health = 62;
+      player.shield = 45;
+      combat.slots[1] = makeWeaponFor('ar', 'epic');
+      combat.selectSlot(1);
+      combat.weapon.ammo = 7;
+      combat.reserveAmmo.medium = 148;
+      combat.consumables.shield = 2;
+      bld.resources = { wood: 372, brick: 205, metal: 118 };
+      bld.active = false;
+
+      st.start();
+      // Keep the wall out past the draw distance: this capture is about HUD
+      // legibility, and a close storm wall floods the frame with purple.
+      st.centre.set(g.x, g.z);
+      st.radius = 430;
+      st.targetRadius = 280;
+      st.state = 1;              // shrinking, so the HUD shows the closing state
+      st.shrinkDuration = 60;
+      st.timer = 38;
+      st.dps = 4;
+
+      // Leave a few bots alive so the counters read like a real match.
+      botMgr.bots.forEach((b, i) => { b.alive = i < 11; });
+      botMgr.aliveCount = 11;
+      engine.services.get('match').stats.eliminations = 4;
+      engine.services.get('match').state = 3;   // PLAYING
+
+      // Populate the kill feed and a hitmarker.
+      hud.killfeed = [
+        { text: 'YOU eliminated Bot 14', ttl: 4, mine: true },
+        { text: 'Bot 3 eliminated Bot 21', ttl: 3.2, mine: false },
+        { text: 'the storm eliminated Bot 9', ttl: 2.4, mine: false },
+      ];
+      hud._feedDirty = true;
+      hud._hitmarkerTimer = 0.2;
+
+      rig.enabled = true;
+      rig.occlusion = 1;
+      for (let i = 0; i < 120; i++) rig.update(1 / 60);
+      t.updateLods(true); t.flushQueue(t.chunks.length); t.updateLods(false);
+      engine.services.get('vegetation').repack(true);
+      engine.services.get('vegetation').repackGrass(true);
+      engine.services.get('sky').update();
+      st.update(1 / 60);
+      hud.update(1 / 60);
+      engine.services.get('minimap').draw();
+      // Damage numbers, projected from a point ahead of the player.
+      const dn = engine.services.get('damageNumbers');
+      dn.clear();
+      const fwd = player.lookDirection(new THREE.Vector3());
+      const base = player.eyePosition(new THREE.Vector3()).addScaledVector(fwd, 9);
+      dn.spawn({ x: base.x, y: base.y + 0.4, z: base.z }, 33, 'body');
+      dn.spawn({ x: base.x + 1.1, y: base.y + 0.9, z: base.z + 0.6 }, 74, 'head');
+      dn.update(0.25);
+      for (let i = 0; i < 6; i++) rig.update(1 / 60);
+      return true;
+    }
+
+    // Results screen with a full stat line.
+    if (name === 'screen_result') {
+      const screens = engine.services.get('screens');
+      screens.showResult({
+        victory: true, placement: 1, players: 25, eliminations: 7,
+        damage: 1842, accuracy: 0.412, chests: 6, distance: 2143, time: 512,
+      });
+      return true;
+    }
+
     // Rig-driven scenarios: place the player, then let CameraRig settle.
     if (name === 'player_tps' || name === 'player_ads') {
       const t = engine.services.get('terrain');
@@ -478,6 +572,8 @@ async function boot() {
         storm: engine.services.get('storm').snapshot(),
         loot: engine.services.get('loot').state(),
         match: engine.services.get('match').snapshot(),
+        hud: engine.services.get('hud').snapshot(),
+        screens: engine.services.get('screens').snapshot(),
         fx: engine.services.get('fx').state(),
         audio: engine.services.get('audio').state(),
         terrain: { ...t.stats, maxHeight: +t.field.maxHeight.toFixed(2) },
@@ -521,7 +617,12 @@ async function boot() {
       heightAt: (x, z) => engine.services.get('terrain').heightAt(x, z),
       biomeAt: (x, z) => engine.services.get('terrain').biomeAt(x, z),
       teleport: (x, z, yOff = 0) => engine.services.get('player').spawnAt(x, z, yOff).toArray(),
-      setUiVisible: (v) => { engine.services.get('touch').setVisible(v); },
+      setUiVisible: (v) => {
+        engine.services.get('touch').setVisible(v);
+        engine.services.get('hud').setVisible(v);
+        engine.services.get('minimap').setVisible(v);
+      },
+      showScreen: (name) => engine.services.get('screens').show(name),
       setYaw: (y) => { engine.services.get('player').yaw = y; },
       startMatch: () => engine.services.get('match').startMatch(),
       deploy: () => engine.services.get('match').deploy(),
@@ -544,8 +645,11 @@ async function boot() {
     if (opts.scenario) {
       engine.services.get('bots').spawnAll();
       engine.services.get('loot').populate();
+      engine.services.get('screens').show(null);
     } else {
-      engine.services.get('match').startMatch();
+      // A real session waits behind the start screen: audio unlock, fullscreen
+      // and orientation lock all require a user gesture.
+      engine.services.get('screens').show('start');
     }
     engine.services.get('cameraRig').update(0.016);
     if (opts.scenario && SCENARIOS[opts.scenario]) applyScenario(opts.scenario);

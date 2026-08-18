@@ -53,6 +53,10 @@ const reset = (page) => page.evaluate(() => {
   // background would move the player and pollute the weapon counters.
   const md = G.engine.services.peek('match');
   if (md) { md.state = 0; if (md.busMesh) md.busMesh.visible = false; }
+  // A real session opens behind the start screen, which hides the control layer
+  // and suspends input. Dismiss it so the controls are live and hit-testable.
+  const screens = G.engine.services.peek('screens');
+  if (screens) screens.show(null);
   const stormSys = G.engine.services.peek('storm');
   if (stormSys) stormSys.active = false;
   const bots = G.engine.services.peek('bots');
@@ -94,6 +98,10 @@ async function main() {
     const cdp = await context.newCDPSession(page);
     await page.evaluate(() => window.__GAME.deterministic(true));
 
+    // The control layer is measured only once, so the start screen has to be
+    // dismissed first: rectangles read while the layer is display:none are all
+    // zero-sized and every button tap would land at the origin.
+    await reset(page);
     const rects = await page.evaluate(() => window.__GAME.input.touchRects());
     const VW = rects._viewport.w, VH = rects._viewport.h;
     console.log(`  viewport ${VW}x${VH} css, dpr ${profile.deviceScaleFactor}`);

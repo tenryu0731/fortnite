@@ -48,6 +48,9 @@ const SCENARIOS = [
   // Match layer: the storm boundary and a chest with its contents.
   { name: 'storm_edge', device: 'phoneLandscape', steps: 2, scenario: 'storm_edge' },
   { name: 'match_loot', device: 'phoneLandscape', steps: 2, scenario: 'match_loot' },
+  // UI: the full in-match HUD, and the results card.
+  { name: 'hud_full', showUi: true, device: 'phoneLandscape', steps: 2, scenario: 'hud_full' },
+  { name: 'screen_result', showUi: true, device: 'phoneLandscape', steps: 2, scenario: 'screen_result' },
   // Touch control layout, in both orientations and in build mode.
   { name: 'touch_landscape', showUi: true, device: 'phoneLandscape', steps: 4, scenario: 'player_tps' },
   { name: 'touch_portrait', showUi: true, device: 'phone', steps: 4, scenario: 'player_tps' },
