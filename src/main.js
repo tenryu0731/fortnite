@@ -8,6 +8,7 @@ import { Terrain } from './world/Terrain.js';
 import { Sky } from './world/Sky.js';
 import { Vegetation } from './world/Vegetation.js';
 import { Structures } from './world/Structures.js';
+import * as THREE from 'three';
 import { Physics } from './sim/Physics.js';
 import { InputHub } from './input/InputState.js';
 import { DesktopInput } from './input/DesktopInput.js';
@@ -16,6 +17,8 @@ import { PlayerController } from './player/PlayerController.js';
 import { CameraRig } from './player/CameraRig.js';
 import { BuildSystem } from './build/BuildSystem.js';
 import { CombatSystem } from './combat/CombatSystem.js';
+import { FxSystem } from './fx/FxSystem.js';
+import { AudioSystem } from './audio/AudioSystem.js';
 import { makeWeapon as makeWeaponFor } from './combat/Weapons.js';
 
 /** Query-string overrides let the harness pin seed/quality/scenario per run. */
@@ -67,7 +70,9 @@ async function boot() {
   engine.register('input', input);
   engine.register('player', new PlayerController({ seed: opts.seed }));
   engine.register('build', new BuildSystem());
+  engine.register('audio', new AudioSystem());
   engine.register('combat', new CombatSystem(opts.seed));
+  engine.register('fx', new FxSystem(opts.seed));
   engine.register('cameraRig', new CameraRig());
 
   /**
@@ -112,6 +117,7 @@ async function boot() {
     player_tps: () => null,
     player_ads: () => null,
     build_grid: () => null,
+    fx_combat: () => null,
     terrain_coast: () => {
       const t = engine.services.get('terrain');
       // Walk outward from the centre until the ground drops below sea level.
@@ -176,6 +182,59 @@ async function boot() {
       engine.camera.lookAt(g.x, g.y + 2.0, g.z);
       engine.camera.updateMatrixWorld(true);
       rig.enabled = false;
+      t.updateLods(true); t.flushQueue(t.chunks.length); t.updateLods(false);
+      engine.services.get('vegetation').repack(true);
+      engine.services.get('vegetation').repackGrass(true);
+      engine.services.get('sky').update();
+      return true;
+    }
+
+    // FX scenario: fire into a freshly built wall so the frame carries muzzle
+    // flash, tracer, impact sparks, debris and a decal at once.
+    if (name === 'fx_combat') {
+      const t = engine.services.get('terrain');
+      const player = engine.services.get('player');
+      const bld = engine.services.get('build');
+      const combat = engine.services.get('combat');
+      const fxs = engine.services.get('fx');
+      const rig = engine.services.get('cameraRig');
+      const r = makeRoot(opts.seed).stream('scenario');
+      const g = t.findGround(-60, 120, r);
+
+      player.spawnAt(g.x, g.z, 0);
+      player.yaw = 0; player.pitch = 0;
+      engine.stepSim(4);
+
+      bld.resources.brick = 500;
+      bld.active = true;
+      bld.setPiece(0); bld.setMaterial('brick');
+      bld.computeTarget();
+      bld.place();
+      for (const rec of bld.pending) rec.meta.hp = rec.meta.maxHp;
+      bld.pending.length = 0;
+      bld.active = false;
+
+      combat.slots[1] = makeWeaponFor('ar', 'epic');
+      combat.selectSlot(1);
+      combat.reserveAmmo.medium = 500;
+
+      // The camera must look exactly where the player faces: shots follow the
+      // camera axis while the build preview follows the player's yaw, so a
+      // mismatch here would put the wall somewhere the bullets never go.
+      const eye = player.eyePosition(new THREE.Vector3());
+      engine.camera.position.set(eye.x + 0.62, eye.y + 0.2, eye.z + 3.2);
+      engine.camera.lookAt(eye.x + 0.62, eye.y + 0.2, eye.z - 40);
+      engine.camera.updateMatrixWorld(true);
+      rig.enabled = false;
+
+      // A short burst, stepped just enough that the flashes differ in age.
+      fxs.clear();
+      for (let i = 0; i < 4; i++) {
+        combat.weapon.cooldown = 0;
+        combat.fire(player);
+        engine.bus.flush();
+        fxs.update(1 / 90);
+      }
       t.updateLods(true); t.flushQueue(t.chunks.length); t.updateLods(false);
       engine.services.get('vegetation').repack(true);
       engine.services.get('vegetation').repackGrass(true);
@@ -257,6 +316,8 @@ async function boot() {
         player: engine.services.get('player').state(),
         build: engine.services.get('build').state(),
         combat: engine.services.get('combat').state(),
+        fx: engine.services.get('fx').state(),
+        audio: engine.services.get('audio').state(),
         terrain: { ...t.stats, maxHeight: +t.field.maxHeight.toFixed(2) },
         vegetation: { ...v.stats },
         structures: { ...engine.services.get('structures').stats,

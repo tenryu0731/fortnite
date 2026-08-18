@@ -23,6 +23,8 @@ const SUITE = `async () => {
   const rig = S.get('cameraRig');
   const build = S.get('build');
   const combat = S.get('combat');
+  const fx = S.get('fx');
+  const audio = S.get('audio');
 
   // Deterministic driver: hold an input state for N fixed steps.
   const sim = (frames, input) => {
@@ -990,6 +992,7 @@ const SUITE = `async () => {
   /* --- combat ------------------------------------------------------------ */
   const { makeWeapon, falloff, partMultiplier, WEAPONS } = await import('/src/combat/Weapons.js');
   const { rayCapsule } = await import('/src/combat/CombatSystem.js');
+  const weaponTable = { WEAPONS };
 
   /** A stationary damageable stand-in, placed relative to the player. */
   const makeDummy = (x, y, z) => {
@@ -1308,8 +1311,201 @@ const SUITE = `async () => {
     return { ok: player.health === before, detail: 'player health unchanged at ' + player.health };
   });
 
+  /* --- FX ----------------------------------------------------------------- */
+  t('fx: firing emits a muzzle flash and a tracer', () => {
+    armed('ar');
+    fx.clear();
+    const before = { ...fx.stats };
+    combat.fire(player);
+    G.engine.bus.flush();
+    fx.update(1 / 60);
+    return { ok: fx.stats.flashes === before.flashes + 1 && fx.stats.tracers === before.tracers + 1
+               && fx.additive.count > 0 && fx.tracers.count === 1,
+             detail: fx.additive.count + ' particles, ' + fx.tracers.count + ' tracer' };
+  });
+
+  t('fx: hitting a surface leaves an impact and a decal', () => {
+    armed('ar');
+    fx.clear();
+    const d0 = fx.decals ? fx.decals.count : 0;
+    // Shoot straight down into the terrain, which is guaranteed to be in range.
+    const p = player.position;
+    G.engine.camera.position.set(p.x, p.y + 3, p.z);
+    G.engine.camera.lookAt(p.x, p.y - 5, p.z);
+    G.engine.camera.updateMatrixWorld(true);
+    combat.fire(player);
+    G.engine.bus.flush();
+    return { ok: fx.stats.impacts > 0 && fx.debris.count > 0 && (!fx.decals || fx.decals.count === d0 + 1),
+             detail: fx.stats.impacts + ' impacts, ' + fx.debris.count + ' debris, '
+               + (fx.decals ? fx.decals.count : 0) + ' decals' };
+  });
+
+  t('fx: particles expire and the pool returns to empty', () => {
+    fx.clear();
+    armed('ar');
+    combat.fire(player);
+    G.engine.bus.flush();
+    const peak = fx.additive.count + fx.debris.count;
+    for (let i = 0; i < 200; i++) { fx.update(1 / 60); }
+    return { ok: peak > 0 && fx.additive.count === 0 && fx.debris.count === 0 && fx.tracers.count === 0,
+             detail: 'peak ' + peak + ' particles, all expired after 3.3s' };
+  });
+
+  t('fx: the particle pool is bounded under sustained fire', () => {
+    fx.clear();
+    armed('smg');
+    combat.reserveAmmo.light = 9999;
+    for (let i = 0; i < 400; i++) {
+      combat.weapon.cooldown = 0;
+      combat.weapon.ammo = combat.weapon.magSize;
+      combat.reloading = false;
+      combat.fire(player);
+      G.engine.bus.flush();
+      fx.update(1 / 240);        // deliberately slow expiry to stress the pool
+    }
+    const cap = fx.additive.capacity;
+    return { ok: fx.additive.count <= cap && fx.debris.count <= fx.debris.capacity
+               && fx.tracers.count <= fx.tracers.capacity,
+             detail: fx.additive.count + '/' + cap + ' additive, ' + fx.debris.count + '/'
+               + fx.debris.capacity + ' debris, ' + fx.tracers.count + '/' + fx.tracers.capacity + ' tracers' };
+  });
+
+  t('fx: decals recycle instead of growing without bound', () => {
+    if (!fx.decals) return { ok: true, detail: 'decals disabled at this quality' };
+    fx.decals.clear();
+    const n = new THREE.Vector3(0, 1, 0);
+    const p = new THREE.Vector3(0, 10, 0);
+    for (let i = 0; i < fx.decals.capacity * 3; i++) fx.decals.place(p, n, 0.2);
+    return { ok: fx.decals.count === fx.decals.capacity && fx.decals.mesh.count === fx.decals.capacity,
+             detail: 'placed ' + (fx.decals.capacity * 3) + ', holding ' + fx.decals.count
+               + ' (capacity ' + fx.decals.capacity + ')' };
+  });
+
+  t('fx: destroying a build piece throws debris', () => {
+    fx.clear();
+    buildStance(0, 0);
+    sim(4, { buildMode: true, buildPiece: 0, fire: true });
+    const recId = build.kit.records.findIndex((r) => r.alive);
+    build.damageRecord(recId, 1e9);
+    G.engine.bus.flush();
+    return { ok: fx.debris.count >= 10, detail: fx.debris.count + ' debris pieces from one destroyed wall' };
+  });
+
+  t('render: no material declares vertexColors without a colour attribute', () => {
+    // A material with vertexColors whose geometry has no "color" attribute
+    // makes the shader read an undefined attribute, which resolves to black.
+    // On an additive material that renders as nothing at all — the failure is
+    // completely silent, which is why this is checked across the whole scene.
+    const bad = [];
+    G.engine.scene.traverse((o) => {
+      if (!o.isMesh && !o.isLine && !o.isPoints) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (!m || !m.vertexColors) continue;
+        if (!o.geometry.getAttribute('color')) bad.push((o.name || o.type) + '/' + (m.name || m.type));
+      }
+    });
+    return { ok: bad.length === 0, detail: bad.length ? bad.join(', ') : 'all vertex-coloured meshes carry the attribute' };
+  });
+
+  t('fx: additive particles are actually visible (non-black)', () => {
+    fx.clear();
+    armed('ar');
+    combat.fire(player);
+    G.engine.bus.flush();
+    fx.update(1 / 120);
+    const c = fx.additive.mesh.instanceColor.array;
+    let maxC = 0;
+    for (let i = 0; i < fx.additive.count * 3; i++) maxC = Math.max(maxC, c[i]);
+    const hasVertexColors = !!fx.additive.mesh.material.vertexColors;
+    return { ok: fx.additive.count > 0 && maxC > 0.2 && !hasVertexColors,
+             detail: fx.additive.count + ' particles, brightest channel ' + maxC.toFixed(2)
+               + ', material vertexColors=' + hasVertexColors };
+  });
+
+  t('fx: the whole feedback layer costs four draw calls', () => {
+    const meshes = [fx.additive.mesh, fx.debris.mesh, fx.tracers.mesh];
+    if (fx.decals) meshes.push(fx.decals.mesh);
+    const allInScene = meshes.every((m) => m.parent === fx.group);
+    return { ok: allInScene && meshes.length <= 4,
+             detail: meshes.length + ' draw calls for particles, debris, tracers and decals' };
+  });
+
+  /* --- audio -------------------------------------------------------------- */
+  t('audio: works as a no-op when no AudioContext is available', () => {
+    // The verification browser has no audio device; nothing may throw and
+    // nothing above the audio layer may need to know.
+    const before = audio.state();
+    const r1 = audio.play('shot_ar', { volume: 1 });
+    const r2 = audio.play('shot_ar', { position: new THREE.Vector3(0, 0, 0) });
+    const r3 = audio.loop('storm_loop', 0.4);
+    audio.setLoopVolume('storm_loop', 0.1);
+    audio.stopLoop('storm_loop');
+    audio.stopAll();
+    const after = audio.state();
+    return { ok: r1 === null && r2 === null && r3 === null && after.voices === 0
+               && after.stats.dropped > before.stats.dropped,
+             detail: 'ready=' + after.ready + ', all calls returned null and were counted as dropped' };
+  });
+
+  t('audio: the full sound library is available to play', () => {
+    const names = audio.gen.names();
+    const needed = ['shot_ar', 'shot_smg', 'shot_shotgun', 'shot_sniper', 'shot_pistol',
+      'reload_in', 'reload_out', 'step_grass', 'build_wood', 'build_brick', 'build_metal',
+      'build_break', 'harvest', 'pickup', 'hitmarker', 'headshot', 'hurt', 'eliminate',
+      'shield', 'storm_loop', 'wind_loop', 'glider', 'storm_warn'];
+    const missing = needed.filter((n) => !audio.gen.has(n));
+    return { ok: missing.length === 0 && names.length >= 25,
+             detail: names.length + ' sounds synthesised, missing: ' + (missing.join(',') || 'none') };
+  });
+
+  t('audio: every weapon names a sound that exists', () => {
+    const { WEAPONS } = weaponTable;
+    const missing = Object.values(WEAPONS).filter((d) => d.sound && !audio.gen.has(d.sound)).map((d) => d.id);
+    return { ok: missing.length === 0, detail: missing.length ? 'missing: ' + missing.join(',') : 'all weapon sounds present' };
+  });
+
+  t('audio: playback works when a context is available', () => {
+    // The verification browser may or may not expose WebAudio. Where it does,
+    // the real playback path is exercised; where it does not, the no-op path
+    // above is the coverage and this check reports that explicitly.
+    const created = audio.unlock();
+    if (!created) return { ok: true, detail: 'no AudioContext in this browser — no-op path verified above' };
+    const v1 = audio.play('shot_ar', { volume: 0.4 });
+    const buffered = audio.buffers.has('shot_ar');
+    // Voice limiting must cap identical sounds.
+    for (let i = 0; i < 12; i++) audio.play('shot_ar', { volume: 0.1 });
+    const capped = audio.voices.filter((v) => v.name === 'shot_ar').length;
+    const l = audio.loop('wind_loop', 0.2);
+    const loopedUp = audio.loops.has('wind_loop');
+    audio.stopLoop('wind_loop');
+    audio.stopAll();
+    return { ok: !!v1 && buffered && capped <= 4 && !!l && loopedUp && audio.loops.size === 0,
+             detail: 'context created, ' + capped + ' concurrent voices of one sound (cap 4), loop start/stop ok' };
+  });
+
+  t('audio: distance attenuation falls off and pans with the camera', () => {
+    // Exercised directly, since playback itself is unavailable here.
+    const cam = G.engine.camera;
+    cam.position.set(0, 0, 0);
+    cam.lookAt(0, 0, -1);
+    cam.updateMatrixWorld(true);
+    audio.camera = cam;
+    const near = audio._spatial(0, 0, -5);
+    const far = audio._spatial(0, 0, -100);
+    const right = audio._spatial(20, 0, 0);
+    const left = audio._spatial(-20, 0, 0);
+    const beyond = audio._spatial(0, 0, -5000);
+    return { ok: near.gain > far.gain && far.gain > 0 && beyond === null
+               && right.pan > 0.8 && left.pan < -0.8,
+             detail: '5m gain ' + near.gain.toFixed(3) + ', 100m gain ' + far.gain.toFixed(3)
+               + ', pan right ' + right.pan.toFixed(2) + ' left ' + left.pan.toFixed(2)
+               + ', beyond max distance culled' };
+  });
+
   dropDummies();
   clearBuilds();
+  fx.clear();
 
   return results;
 }`;

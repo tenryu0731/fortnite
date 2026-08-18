@@ -306,6 +306,79 @@ function makeLeafTexture(size, seed) {
   return tex;
 }
 
+/**
+ * Bullet-hole decal: a soft dark core with a lighter rim and irregular edge,
+ * drawn with alpha so it can be laid over any surface.
+ */
+function makeDecalTexture(size, seed) {
+  const canvas = createCanvas(size, size);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, size, size);
+  const rng = new Rng(seed);
+  const c = size / 2;
+
+  // Rim: a slightly ragged lighter ring reads as blown-out material.
+  ctx.beginPath();
+  for (let i = 0; i <= 24; i++) {
+    const a = (i / 24) * Math.PI * 2;
+    const r = size * (0.30 + rng.range(-0.05, 0.05));
+    const x = c + Math.cos(a) * r, y = c + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(210,205,196,0.55)';
+  ctx.fill();
+
+  // Core: a dark hole with a soft falloff.
+  const g = ctx.createRadialGradient(c, c, 0, c, c, size * 0.26);
+  g.addColorStop(0, 'rgba(14,12,10,0.96)');
+  g.addColorStop(0.55, 'rgba(24,20,17,0.80)');
+  g.addColorStop(1, 'rgba(30,26,22,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(c, c, size * 0.30, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Radial cracks.
+  ctx.strokeStyle = 'rgba(20,17,14,0.5)';
+  ctx.lineWidth = Math.max(1, size / 90);
+  for (let i = 0; i < 7; i++) {
+    const a = rng.range(0, Math.PI * 2);
+    const r0 = size * 0.22, r1 = size * rng.range(0.30, 0.46);
+    ctx.beginPath();
+    ctx.moveTo(c + Math.cos(a) * r0, c + Math.sin(a) * r0);
+    ctx.lineTo(c + Math.cos(a) * r1, c + Math.sin(a) * r1);
+    ctx.stroke();
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+/**
+ * Soft radial sprite used for sparks, flashes and dust. One texture serves all
+ * of them; colour and size come from the particle, not the image.
+ */
+function makeSparkTexture(size) {
+  const canvas = createCanvas(size, size);
+  const ctx = canvas.getContext('2d');
+  const c = size / 2;
+  const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.28, 'rgba(255,255,255,0.72)');
+  g.addColorStop(0.6, 'rgba(255,255,255,0.20)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 /** Vertical sky gradient strip with a subtle horizon haze band. */
 function makeSkyTexture(size, top, horizon, bottom) {
   const canvas = createCanvas(4, size);
@@ -391,6 +464,22 @@ export class TextureGen {
   }
 
   /** Small solid-colour texture — handy placeholder that avoids a null map. */
+  decal(size = 128, seed = 3) {
+    const key = `decal:${size}:${seed}`;
+    if (this.cache.has(key)) return this.cache.get(key);
+    const t = makeDecalTexture(size, seed);
+    this.cache.set(key, t);
+    return t;
+  }
+
+  spark(size = 64) {
+    const key = `spark:${size}`;
+    if (this.cache.has(key)) return this.cache.get(key);
+    const t = makeSparkTexture(size);
+    this.cache.set(key, t);
+    return t;
+  }
+
   solid(hex) {
     const key = `solid:${hex}`;
     if (this.cache.has(key)) return this.cache.get(key);

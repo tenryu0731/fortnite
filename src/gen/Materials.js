@@ -92,6 +92,51 @@ export class Materials {
     }));
   }
 
+  /**
+   * Additive sprite material for particles.
+   *
+   * Deliberately does NOT set `vertexColors`. Instanced particles are tinted
+   * through `instanceColor`, which three handles on its own; declaring
+   * `vertexColors` as well makes the shader read a `color` attribute the quad
+   * geometry does not have, which resolves to black — and black added to the
+   * frame is invisible. Same reasoning for `particleLit` and `decal`.
+   */
+  sprite(key = 'spark', opts = {}) {
+    return this._mat(`sprite:${key}`, () => new THREE.MeshBasicMaterial({
+      map: this.gen.spark(64),
+      color: 0xffffff,
+      transparent: true,
+      opacity: opts.opacity ?? 1,
+      blending: opts.blending || THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      fog: opts.fog !== false,
+    }));
+  }
+
+  /** Lit material for instanced debris; tinted per instance, not per vertex. */
+  particleLit(key = 'debris') {
+    return this._mat(`plit:${key}`, () => new THREE.MeshLambertMaterial({
+      color: 0xffffff,
+      flatShading: true,
+    }));
+  }
+
+  /** Decal material for bullet holes; tinted per instance. */
+  decal(key = 'bullet') {
+    return this._mat(`decal:${key}`, () => new THREE.MeshBasicMaterial({
+      map: this.gen.decal(128, 3),
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+      side: THREE.DoubleSide,
+      fog: true,
+    }));
+  }
+
   get count() { return this.cache.size; }
 
   dispose() {
