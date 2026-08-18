@@ -19,6 +19,8 @@ const MAX_DIFF_RATIO = 0.003; // 0.30%
 const SCENARIOS = [
   { name: 'bootstrap', device: 'phoneLandscape', steps: 60,
     camera: { position: [0, 14, 42], lookAt: [0, 2, 0] } },
+  // Generation library: every procedural surface and mesh builder in one view.
+  { name: 'gen_gallery', device: 'phoneLandscape', steps: 2, query: { scenario: 'gallery', quality: 'high' } },
 ];
 
 async function capture(page, scn, file) {

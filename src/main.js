@@ -66,7 +66,12 @@ async function boot() {
   const settings = new Settings(overrides.user);
   const engine = new Engine(canvas, settings);
 
-  engine.register('bootstrap', new BootstrapScene());
+  if (overrides.scenario === 'gallery') {
+    const { Gallery } = await import('./dev/Gallery.js');
+    engine.register('gallery', new Gallery());
+  } else {
+    engine.register('bootstrap', new BootstrapScene());
+  }
 
   const ctx = {
     seed: overrides.seed,
@@ -78,8 +83,10 @@ async function boot() {
 
   api.ready = (async () => {
     await engine.init();
-    engine.camera.position.set(0, 14, 42);
-    engine.camera.lookAt(0, 2, 0);
+    if (overrides.scenario !== 'gallery') {
+      engine.camera.position.set(0, 14, 42);
+      engine.camera.lookAt(0, 2, 0);
+    }
     engine.start();
     document.body.dataset.ready = '1';
     return true;
