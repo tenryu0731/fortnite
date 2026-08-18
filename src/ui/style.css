@@ -1,0 +1,49 @@
+:root {
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --hud-fg: #eaf2ff;
+  --hud-dim: #9db0cc;
+  --accent: #35d6ff;
+  --hp: #46e07a;
+  --shield: #45b7ff;
+  --wood: #c98b45;
+  --brick: #c05a4a;
+  --metal: #9aa7b4;
+  --danger: #ff4d5e;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0a0d16;
+  color: var(--hud-fg);
+  font-family: 'Trebuchet MS', 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  touch-action: none;
+}
+
+#gl {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+}
+
+#ui-root {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
