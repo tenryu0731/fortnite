@@ -118,6 +118,13 @@ html, body {
   box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.35);
 }
 
+/* Auto-sprint feedback: the ring lights up so the gesture is discoverable
+   rather than something the player has to be told about. */
+.stick.sprinting .stick-ring {
+  border-color: rgba(53, 214, 255, 0.85);
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.35), 0 0 16px rgba(53, 214, 255, 0.5);
+}
+
 .stick-knob {
   position: absolute;
   left: 50%;
@@ -168,27 +175,56 @@ html, body {
 }
 .tbtn-label { pointer-events: none; }
 
-/* Right-hand cluster. The fire button is the largest target and sits under a
-   resting right thumb; the rest fan out around it along the thumb's arc, with
-   enough separation that a mis-press lands on empty space rather than the
-   wrong action. */
+/* Control layout.
+ *
+ * Two rules decide everything here:
+ *
+ *  1. The lower-left quadrant belongs to the movement stick and the right half
+ *     belongs to the look drag. No button may sit in either, or the player
+ *     reaches for the camera and presses a control instead. Everything lives
+ *     on the outer right edge or along the top, where nothing else competes.
+ *  2. One thumb cannot hold two buttons. Rather than spread controls across
+ *     both hands and eat the stick zone, the two that used to conflict were
+ *     changed instead: ADS is a toggle, and holding FIRE also steers the
+ *     camera (see TouchInput fire-drag). Aiming while shooting needs no second
+ *     thumb at all.
+ *
+ * Spacing is one full button between neighbours, so a mis-press lands on empty
+ * space rather than on the wrong action. */
 .b-fire {
-  right: calc(var(--pad-r) + 16vmin);
-  bottom: calc(var(--pad-b) + 7vmin);
-  width: 20vmin;
-  height: 20vmin;
+  right: calc(var(--pad-r) + 1vmin);
+  bottom: calc(var(--pad-b) + 9vmin);
+  width: 21vmin;
+  height: 21vmin;
   font-size: 3vmin;
   background: radial-gradient(circle at 40% 34%,
-    rgba(255, 190, 190, 0.28) 0%, rgba(140, 44, 58, 0.74) 58%, rgba(72, 18, 30, 0.86) 100%);
-  border-color: rgba(255, 160, 168, 0.7);
+    rgba(255, 255, 255, 0.24) 0%, rgba(190, 62, 78, 0.72) 62%, rgba(120, 28, 44, 0.8) 100%);
+  border-color: rgba(255, 150, 160, 0.6);
 }
 .b-fire.down { border-color: #ff6b7a; }
-.b-jump { right: var(--pad-r); bottom: calc(var(--pad-b) + 23vmin); }
-.b-crouch { right: var(--pad-r); bottom: calc(var(--pad-b) + 2vmin); }
-.b-aim { right: calc(var(--pad-r) + 40vmin); bottom: calc(var(--pad-b) + 17vmin); }
-.b-reload { right: calc(var(--pad-r) + 40vmin); bottom: calc(var(--pad-b) + 1vmin); }
-.b-harvest { right: calc(var(--pad-r) + 19vmin); bottom: calc(var(--pad-b) + 32vmin); }
-.b-item { right: calc(var(--pad-r) + 40vmin); bottom: calc(var(--pad-b) + 33vmin); }
+
+/* Right thumb arc, fanned around the fire button. */
+.b-jump { right: calc(var(--pad-r) + 24vmin); bottom: calc(var(--pad-b) + 3vmin); }
+.b-crouch { right: calc(var(--pad-r) + 25vmin); bottom: calc(var(--pad-b) + 21vmin); }
+.b-aim { right: calc(var(--pad-r) + 2vmin); bottom: calc(var(--pad-b) + 33vmin); }
+.b-reload { right: calc(var(--pad-r) + 20vmin); bottom: calc(var(--pad-b) + 39vmin); }
+
+/* Top-right row: things that are never pressed in the middle of a burst, kept
+   clear of the thumb arc so they cannot be hit by accident. Deliberately
+   smaller than the combat buttons and packed into the corner, so the row stops
+   short of the area a right thumb sweeps to aim. */
+.b-build, .b-harvest, .b-item, .b-edit {
+  width: 12.5vmin;
+  height: 12.5vmin;
+  font-size: 2.1vmin;
+  top: calc(var(--safe-t) + 3vmin);
+}
+.b-build { right: var(--pad-r); }
+.b-harvest { right: calc(var(--pad-r) + 14vmin); }
+.b-item { right: calc(var(--pad-r) + 28vmin); }
+.b-edit { right: calc(var(--pad-r) + 42vmin); }
+/* Build mode hides ADS, so ROT inherits its slot rather than adding a target. */
+.b-rotate { right: calc(var(--pad-r) + 2vmin); bottom: calc(var(--pad-b) + 33vmin); }
 
 /* Contextual buttons. Both are hidden until the game says they apply, so they
    never sit in the middle of the screen blocking the view. */
@@ -199,7 +235,6 @@ html, body {
   width: 22vmin;
   height: 9vmin;
   border-radius: 4.5vmin;
-  border-color: var(--accent);
   display: none;
 }
 .b-interact.shown { display: flex; }
@@ -211,17 +246,10 @@ html, body {
   width: 27vmin;
   height: 10vmin;
   border-radius: 5vmin;
-  font-size: 3.2vmin;
-  border-color: var(--accent);
   display: none;
 }
 .b-deploy.shown { display: flex; }
 .b-deploy.down { transform: translateX(-50%) scale(0.94); }
-
-/* Build controls live top-right, clear of the movement and fire thumb arcs. */
-.b-build { right: var(--pad-r); top: calc(var(--safe-t) + 3vmin); }
-.b-edit { right: calc(var(--pad-r) + 16vmin); top: calc(var(--safe-t) + 3vmin); }
-.b-rotate { right: calc(var(--pad-r) + 40vmin); bottom: calc(var(--pad-b) + 17vmin); }
 
 /* --- quickbar / piece bar -------------------------------------------------- */
 
@@ -273,6 +301,41 @@ html, body {
   line-height: 1.1;
   padding: 0 0.4vmin;
 }
+/* Material selector, part of the build bar. Each cell shows the bank so a
+   player can see at a glance what they can still afford to place. */
+.qmat {
+  position: relative;
+  width: 12vmin;
+  height: 9vmin;
+  margin-left: 1.4vmin;
+  border-radius: 1.4vmin;
+  background: linear-gradient(180deg, rgba(30, 44, 66, 0.62), rgba(14, 22, 36, 0.72));
+  border: 2px solid rgba(226, 238, 255, 0.30);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--hud-dim);
+  font-size: 1.9vmin;
+  font-weight: 700;
+}
+.qmat:first-of-type { margin-left: 3.4vmin; }
+.qmat.active { border-color: var(--accent); color: var(--hud-fg); box-shadow: 0 0 14px rgba(53, 214, 255, 0.5); }
+.qmat.broke { opacity: 0.42; }
+.qmat[data-mat="wood"] { border-bottom: 3px solid #c08a4a; }
+.qmat[data-mat="brick"] { border-bottom: 3px solid #b8574a; }
+.qmat[data-mat="metal"] { border-bottom: 3px solid #9aa7b4; }
+.qmat-count { font-size: 1.7vmin; opacity: 0.85; }
+
+.qslot-ammo {
+  position: absolute;
+  right: 0.7vmin;
+  bottom: 0.3vmin;
+  font-size: 1.7vmin;
+  opacity: 0.85;
+  color: var(--hud-fg);
+}
 .qslot.empty { opacity: 0.45; }
 
 /* Rarity tinting is applied by the inventory system through a data attribute. */
@@ -283,21 +346,21 @@ html, body {
 .qslot[data-rarity="legendary"] { border-bottom: 3px solid #ffa22e; }
 
 /* Left-handed layout mirrors the whole control set horizontally. */
-.touch-layer.left-handed .b-fire { right: auto; left: calc(var(--pad-l) + 15vmin); }
-.touch-layer.left-handed .b-jump { right: auto; left: var(--pad-l); }
-.touch-layer.left-handed .b-aim { right: auto; left: calc(var(--pad-l) + 36vmin); }
-.touch-layer.left-handed .b-crouch { right: auto; left: var(--pad-l); }
-.touch-layer.left-handed .b-reload { right: auto; left: calc(var(--pad-l) + 36vmin); }
-.touch-layer.left-handed .b-harvest { right: auto; left: calc(var(--pad-l) + 17vmin); }
-.touch-layer.left-handed .b-item { right: auto; left: calc(var(--pad-l) + 40vmin); }
+.touch-layer.left-handed .b-fire { right: auto; left: calc(var(--pad-l) + 1vmin); }
+.touch-layer.left-handed .b-jump { right: auto; left: calc(var(--pad-l) + 24vmin); }
+.touch-layer.left-handed .b-crouch { right: auto; left: calc(var(--pad-l) + 25vmin); }
+.touch-layer.left-handed .b-aim { right: auto; left: calc(var(--pad-l) + 2vmin); }
+.touch-layer.left-handed .b-reload { right: auto; left: calc(var(--pad-l) + 20vmin); }
 .touch-layer.left-handed .b-build { right: auto; left: var(--pad-l); }
-.touch-layer.left-handed .b-edit { right: auto; left: calc(var(--pad-l) + 16vmin); }
-.touch-layer.left-handed .b-rotate { right: auto; left: calc(var(--pad-l) + 36vmin); }
+.touch-layer.left-handed .b-harvest { right: auto; left: calc(var(--pad-l) + 14vmin); }
+.touch-layer.left-handed .b-item { right: auto; left: calc(var(--pad-l) + 28vmin); }
+.touch-layer.left-handed .b-edit { right: auto; left: calc(var(--pad-l) + 42vmin); }
+.touch-layer.left-handed .b-rotate { right: auto; left: calc(var(--pad-l) + 2vmin); }
 
 /* Very short viewports (landscape phones) need a tighter control scale. */
 @media (max-height: 420px) {
   .touch-layer { --btn: 15vmin; }
-  .qslot, .qpiece { width: 11vmin; height: 8vmin; }
+  .qslot, .qpiece, .qmat { width: 11vmin; height: 8vmin; }
 }
 
 /* --- landscape gate -------------------------------------------------------
@@ -710,6 +773,7 @@ body.portrait-gate .touch-layer { visibility: hidden; }
 }
 .screen-btn:active { transform: scale(0.97); }
 .screen-btn.primary { border-color: var(--accent); box-shadow: 0 0 20px rgba(53, 214, 255, 0.3); }
+.screen-btnrow { display: flex; gap: 2vmin; align-items: center; justify-content: center; flex-wrap: wrap; }
 
 .settings-rows { width: min(88vmin, 100%); display: flex; flex-direction: column; gap: 1.2vmin; }
 .settings-row {

@@ -132,7 +132,12 @@ export class Screens {
     this.resultPlacement = el('div', 'result-placement', '');
     this.resultStats = el('div', 'result-stats', '');
     this.againBtn = el('button', 'screen-btn primary', 'PLAY AGAIN');
-    this.result.append(this.resultTitle, this.resultPlacement, this.resultStats, this.againBtn);
+    // A match that can only be replayed traps the player in the loop: there
+    // has to be a way back to the title to change settings or simply stop.
+    this.titleBtn = el('button', 'screen-btn', 'TITLE');
+    const resultBtns = el('div', 'screen-btnrow');
+    resultBtns.append(this.againBtn, this.titleBtn);
+    this.result.append(this.resultTitle, this.resultPlacement, this.resultStats, resultBtns);
     this.layer.appendChild(this.result);
 
     root.appendChild(this.layer);
@@ -142,6 +147,7 @@ export class Screens {
     this.settingsBtn.addEventListener('click', () => this.show('settings'));
     this.settingsBack.addEventListener('click', () => this.show(this.match.state === 0 ? 'start' : null));
     this.againBtn.addEventListener('click', () => { this.match.startMatch(); this.show(null); });
+    this.titleBtn.addEventListener('click', () => this.toTitle());
 
     this.show('start');
   }
@@ -161,6 +167,16 @@ export class Screens {
     }
     this.match.startMatch();
     this.show(null);
+  }
+
+  /**
+   * Back to the title. The match is reset to idle first so the world stops
+   * running a finished match behind the screen — otherwise the storm keeps
+   * closing and bots keep fighting under the title card.
+   */
+  toTitle() {
+    this.match.reset();
+    this.show('start');
   }
 
   show(which) {

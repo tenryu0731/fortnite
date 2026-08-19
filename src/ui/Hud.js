@@ -45,6 +45,7 @@ export class Hud {
     this.bus = services.get('bus');
     this.settings = services.get('settings');
     this.camera = services.get('camera');
+    this.touch = services.peek('touch');
 
     this._build(document.getElementById('ui-root'));
     this._subscribe();
@@ -248,6 +249,38 @@ export class Hud {
     this._set('res', res, (v) => { this.ammoReserve.textContent = v; });
     this._set('lowammo', !!(w && w.magSize !== Infinity && w.ammo <= Math.max(1, w.magSize * 0.2)),
       (v) => { this.ammoBox.classList.toggle('low', v); });
+
+    /* --- quickbar ----------------------------------------------------
+     * The touch quickbar is the only place a player can see what they are
+     * carrying, so it has to mirror the loadout rather than wait for a tap.
+     * Driven from here because the HUD already polls combat every frame and
+     * the change-cache makes a steady loadout cost nothing. */
+    if (this.touch) {
+      for (let i = 0; i < c.slots.length; i++) {
+        const sw = c.slots[i];
+        this._set(`slot${i}`, sw ? `${sw.id}:${sw.rarity}` : '', () => {
+          this.touch.setSlotLabel(i, sw ? sw.def.name : '', sw ? sw.rarity : '');
+        });
+        this._set(`slotammo${i}`, sw ? (sw.ammo === Infinity ? -1 : sw.ammo) : -2, () => {
+          this.touch.setSlotAmmo(i, sw && sw.ammo !== Infinity ? sw.ammo : null);
+        });
+      }
+      this._set('activeSlot', c.activeSlot, (v) => { this.touch.setActiveSlot(v); });
+
+      // Build material bank, so the selector shows what is actually placeable.
+      const mats = this.touch.constructor.MATERIALS || [];
+      for (let i = 0; i < mats.length; i++) {
+        const key = mats[i].key;
+        const have = b.resources[key] | 0;
+        this._set(`matbank${i}`, `${have}:${b.canAfford(key)}`, () => {
+          this.touch.setMaterialCount(i, have, b.canAfford(key));
+        });
+      }
+      this._set('activeMat', b.material, (v) => {
+        const i = mats.findIndex((m) => m.key === v);
+        if (i >= 0) this.touch.setActiveMaterial(i);
+      });
+    }
 
     const reloading = c.reloading;
     this._set('reloading', reloading, (v) => { this.reloadBar.classList.toggle('active', v); });

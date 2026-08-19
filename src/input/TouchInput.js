@@ -28,7 +28,10 @@ const BUTTONS = [
   // id,      label,  class,        role
   { id: 'fire', label: 'FIRE', cls: 'b-fire' },
   { id: 'jump', label: 'JUMP', cls: 'b-jump' },
-  { id: 'aim', label: 'ADS', cls: 'b-aim' },
+  // ADS is a toggle, not a hold. Holding it would consume the one thumb that
+  // also has to fire, which is exactly why aiming and shooting at the same
+  // time was impossible.
+  { id: 'aim', label: 'ADS', cls: 'b-aim', toggle: true },
   { id: 'crouch', label: 'CRCH', cls: 'b-crouch' },
   { id: 'reload', label: 'RLD', cls: 'b-reload' },
   { id: 'harvest', label: 'PICK', cls: 'b-harvest' },
@@ -40,8 +43,31 @@ const BUTTONS = [
   { id: 'deploy', label: 'DROP', cls: 'b-deploy' },
 ];
 
+// Stick deflection at which auto-sprint engages. High enough that ordinary
+// walking never trips it, low enough to reach without hunting for the edge.
+const SPRINT_THRESHOLD = 0.86;
+
 const SLOTS = 5;
+
+/**
+ * Weapon names have to survive a quickbar cell about 11vmin wide, so they are
+ * abbreviated rather than clipped: a truncated "Bolt-Action Sni" reads worse
+ * than "SNIPER" and takes longer to recognise mid-fight.
+ */
+const SHORT_NAME = {
+  'Pickaxe': 'PICK', 'Assault Rifle': 'RIFLE', 'SMG': 'SMG',
+  'Pump Shotgun': 'SHOTGUN', 'Bolt-Action Sniper': 'SNIPER', 'Pistol': 'PISTOL',
+};
+function shortWeaponName(name) {
+  return SHORT_NAME[name] || name.toUpperCase().slice(0, 8);
+}
+
 const PIECES = ['WALL', 'FLOOR', 'RAMP', 'CONE'];
+const MATERIALS = [
+  { key: 'wood', label: 'WOOD' },
+  { key: 'brick', label: 'BRICK' },
+  { key: 'metal', label: 'METAL' },
+];
 
 export class TouchInput {
   constructor(hub, root, settings) {
@@ -58,6 +84,8 @@ export class TouchInput {
     this.portrait = null;
     this.activeSlot = 0;
     this.activePiece = 0;
+    this.activeMaterial = 0;
+    this._sprinting = false;
     this._lastTapTime = 0;
     this._lastTapX = 0;
     this._lastTapY = 0;
@@ -107,7 +135,8 @@ export class TouchInput {
       const s = document.createElement('div');
       s.className = 'qslot';
       s.dataset.slot = String(i);
-      s.innerHTML = `<span class="qslot-key">${i + 1}</span><span class="qslot-name"></span>`;
+      s.innerHTML = `<span class="qslot-key">${i + 1}</span><span class="qslot-name"></span>`
+        + '<span class="qslot-ammo"></span>';
       bar.appendChild(s);
       this.slotEls.push(s);
     }
@@ -124,6 +153,19 @@ export class TouchInput {
       s.innerHTML = `<span class="qpiece-name">${PIECES[i]}</span>`;
       pieceBar.appendChild(s);
       this.pieceEls.push(s);
+    }
+    // Material selector. Without it the player is locked to whatever material
+    // the build system happens to have selected, so running out of wood means
+    // being unable to build at all while carrying hundreds of brick.
+    this.matEls = [];
+    for (let i = 0; i < MATERIALS.length; i++) {
+      const m = document.createElement('div');
+      m.className = 'qmat';
+      m.dataset.mat = MATERIALS[i].key;
+      m.innerHTML = `<span class="qmat-name">${MATERIALS[i].label}</span>`
+        + '<span class="qmat-count"></span>';
+      pieceBar.appendChild(m);
+      this.matEls.push(m);
     }
     layer.appendChild(pieceBar);
     this.pieceBarEl = pieceBar;
@@ -149,13 +191,28 @@ export class TouchInput {
     this.setBuildMode(false);
     this.setActiveSlot(0);
     this.setActivePiece(0);
+    this.setActiveMaterial(0);
   }
 
-  /** Hit areas are inflated past the visual bounds; thumbs are imprecise. */
+  /**
+   * Hit areas are inflated past the visual bounds because thumbs are
+   * imprecise — but only *outward*, toward the screen edge the button hugs.
+   * Inflating inward pushes the control's dead zone into the middle of the
+   * screen, where it silently eats the start of look drags: the player swipes
+   * to turn and presses a button instead. Growing a button toward the bezel
+   * costs nothing, because there is nothing out there to hit.
+   */
   _hitRect(el) {
     const r = el.getBoundingClientRect();
-    const padX = r.width * 0.25, padY = r.height * 0.25;
-    return { l: r.left - padX, t: r.top - padY, r: r.right + padX, b: r.bottom + padY };
+    const padX = r.width * 0.22, padY = r.height * 0.22;
+    const cx = (r.left + r.right) / 2;
+    const towardRight = cx > this.vw / 2;
+    return {
+      l: r.left - (towardRight ? padX * 0.35 : padX),
+      t: r.top - padY * 0.5,
+      r: r.right + (towardRight ? padX : padX * 0.35),
+      b: r.bottom + padY,
+    };
   }
 
   layout() {
@@ -196,6 +253,12 @@ export class TouchInput {
         if (el.offsetParent === null) return;
         this._rects.push({ id: i, kind: this.buildMode ? 'piece' : 'slot', ...this._hitRect(el) });
       });
+      if (this.buildMode) {
+        this.matEls.forEach((el, i) => {
+          if (el.offsetParent === null) return;
+          this._rects.push({ id: i, kind: 'mat', ...this._hitRect(el) });
+        });
+      }
     }
     return this._rects;
   }
@@ -253,7 +316,7 @@ export class TouchInput {
 
     const hit = this._hitTest(x, y);
     if (hit) {
-      this.pointers.set(e.pointerId, { role: ROLE.BUTTON, hit });
+      this.pointers.set(e.pointerId, { role: ROLE.BUTTON, hit, lastX: x, lastY: y, moved: 0 });
       try { this.layerEl.setPointerCapture(e.pointerId); } catch { /* capture is best-effort */ }
       this._activateHit(hit, true);
       return;
@@ -309,6 +372,19 @@ export class TouchInput {
         nx *= scaled; ny *= scaled;
       }
       this.hub.setMove(nx, ny);
+      // Auto-sprint. There is no room on a phone for a sprint button the left
+      // thumb could reach without letting go of the stick, so pushing the stick
+      // to its outer ring forward is the sprint gesture — the same thing every
+      // mobile shooter settled on. The ring lights up so it is discoverable.
+      if (this.settings.user.autoSprint) {
+        const run = ny > 0.72 && Math.hypot(nx, ny) > SPRINT_THRESHOLD;
+        if (run !== this._sprinting) {
+          this._sprinting = run;
+          this.hub.setButton('sprint', run);
+          this.stickEl.classList.toggle('sprinting', run);
+          if (run) this._haptic(6);
+        }
+      }
       return;
     }
 
@@ -316,16 +392,25 @@ export class TouchInput {
       const dx = x - p.lastX, dy = y - p.lastY;
       p.lastX = x; p.lastY = y;
       p.moved += Math.abs(dx) + Math.abs(dy);
-      const u = this.settings.user;
-      // Aiming scales sensitivity down; the FOV is narrower, so the same
-      // finger travel would otherwise sweep far more of the world.
-      const aimScale = this.hub.state.aim ? u.adsSensitivityScale : 1;
-      const s = u.lookSensitivity * 0.0055 * aimScale;
-      this.hub.addLook(-dx * s, (u.invertY ? 1 : -1) * dy * s);
+      this._addLook(dx, dy);
       return;
     }
 
     if (p.role === ROLE.BUTTON && p.hit.kind === 'btn') {
+      const dx = x - p.lastX, dy = y - p.lastY;
+      p.lastX = x; p.lastY = y;
+      p.moved += Math.abs(dx) + Math.abs(dy);
+
+      // Fire-drag. Pressing FIRE and then sliding the same thumb keeps firing
+      // *and* steers the camera. Without it the right thumb has to choose
+      // between shooting and aiming, which is the single worst thing a mobile
+      // shooter can ask of a player. The button is deliberately excluded from
+      // the slide-off release below for the same reason.
+      if (p.hit.id === 'fire') {
+        this._addLook(dx, dy);
+        return;
+      }
+
       // Sliding well outside a held button releases it, so a player can bail
       // out of a mis-press without lifting and re-tapping.
       const el = this.buttonEls.get(p.hit.id);
@@ -336,6 +421,16 @@ export class TouchInput {
         else if (!far && p.released) { this._activateHit(p.hit, true); p.released = false; }
       }
     }
+  }
+
+  /** Turn a finger delta into a look delta. Shared by the look role and FIRE. */
+  _addLook(dx, dy) {
+    const u = this.settings.user;
+    // Aiming scales sensitivity down; the FOV is narrower, so the same finger
+    // travel would otherwise sweep far more of the world.
+    const aimScale = this.hub.state.aim ? u.adsSensitivityScale : 1;
+    const s = u.lookSensitivity * 0.0055 * aimScale;
+    this.hub.addLook(-dx * s, (u.invertY ? 1 : -1) * dy * s);
   }
 
   onPointerUp(e) { this._release(e, false); }
@@ -351,7 +446,10 @@ export class TouchInput {
     if (p.role === ROLE.MOVE) {
       this.stickActive = false;
       this.stickEl.classList.remove('active');
+      this.stickEl.classList.remove('sprinting');
       this.layerEl.classList.remove('stick-down');
+      this._sprinting = false;
+      this.hub.setButton('sprint', false);
       this._setKnob(0, 0);
       this.hub.setMove(0, 0);
     } else if (p.role === ROLE.LOOK) {
@@ -370,10 +468,13 @@ export class TouchInput {
     this.pointers.clear();
     this.stickActive = false;
     this.stickEl.classList.remove('active');
+    this.stickEl.classList.remove('sprinting');
     this.layerEl.classList.remove('stick-down');
+    this._sprinting = false;
     this._setKnob(0, 0);
     this.hub.setMove(0, 0);
     this.hub.setButton('fire', false);
+    this.hub.setButton('sprint', false);
     for (const b of BUTTONS) if (!b.toggle) this.hub.setButton(b.id, false);
     for (const el of this.buttonEls.values()) el.classList.remove('down');
   }
@@ -385,6 +486,10 @@ export class TouchInput {
     }
     if (hit.kind === 'piece') {
       if (down) { this.setActivePiece(hit.id); this.hub.setPiece(hit.id); this._haptic(8); }
+      return;
+    }
+    if (hit.kind === 'mat') {
+      if (down) { this.setActiveMaterial(hit.id); this.hub.setMaterial(MATERIALS[hit.id].key); this._haptic(8); }
       return;
     }
     const def = BUTTONS.find((b) => b.id === hit.id);
@@ -446,13 +551,39 @@ export class TouchInput {
     this.pieceEls.forEach((el, k) => el.classList.toggle('active', k === i));
   }
 
-  /** Label a weapon slot; called by the inventory system. */
+  setActiveMaterial(i) {
+    this.activeMaterial = i;
+    this.matEls.forEach((el, k) => el.classList.toggle('active', k === i));
+  }
+
+  /** Show how much of each material is banked, and grey out what is unaffordable. */
+  setMaterialCount(i, count, affordable) {
+    const el = this.matEls[i];
+    if (!el) return;
+    el.querySelector('.qmat-count').textContent = String(count | 0);
+    el.classList.toggle('broke', !affordable);
+  }
+
+  static get MATERIALS() { return MATERIALS; }
+
+  /**
+   * Label a weapon slot. Driven by the HUD every frame through a change-cache,
+   * because the quickbar is the only place a player can see what they picked
+   * up — an empty bar makes the whole inventory invisible.
+   */
   setSlotLabel(i, name, rarity) {
     const el = this.slotEls[i];
     if (!el) return;
-    el.querySelector('.qslot-name').textContent = name || '';
+    el.querySelector('.qslot-name').textContent = name ? shortWeaponName(name) : '';
     el.dataset.rarity = rarity || '';
     el.classList.toggle('empty', !name);
+  }
+
+  /** Rounds left in the slot's magazine; null hides the readout. */
+  setSlotAmmo(i, ammo) {
+    const el = this.slotEls[i];
+    if (!el) return;
+    el.querySelector('.qslot-ammo').textContent = ammo === null || ammo === undefined ? '' : String(ammo);
   }
 
   /**

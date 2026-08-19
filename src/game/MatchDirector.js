@@ -87,6 +87,24 @@ export class MatchDirector {
   /* lifecycle                                                           */
   /* ------------------------------------------------------------------ */
 
+  /**
+   * Return to idle. Called when the player leaves a finished match for the
+   * title screen: without it the storm keeps closing and the bots keep
+   * fighting behind the title card, and the next match inherits that state.
+   */
+  reset() {
+    this._setState(MATCH.IDLE);
+    this.result = null;
+    this.placement = 0;
+    this.storm.active = false;
+    this.storm.reset();
+    if (this.busMesh) this.busMesh.visible = false;
+    for (const b of this.bots.bots) b.alive = false;
+    this.bots.aliveCount = 0;
+    if (this.audio) { this.audio.stopLoop('storm_loop'); this.audio.stopLoop('wind_loop'); }
+    return true;
+  }
+
   /** Build a fresh match: loot, bots, storm and the bus flight line. */
   startMatch() {
     this.rng = Rng.forStream(this.seed ^ (this.elapsed * 1000 | 0), 'match');

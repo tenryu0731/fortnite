@@ -25,6 +25,9 @@ function blank() {
     harvest: false,
     buildMode: false,
     buildPiece: 0,
+    // Selected build material, or null for "leave it alone". A one-shot like
+    // `slot`, cleared after publication.
+    buildMaterial: null,
     buildRotate: false,
     editMode: false,
     slot: -1,
@@ -58,6 +61,7 @@ export class InputHub {
   setButton(name, down) { if (name in this.raw) this.raw[name] = !!down; }
   setSlot(i) { this.raw.slot = i; }
   setPiece(i) { this.raw.buildPiece = i; }
+  setMaterial(key) { this.raw.buildMaterial = key; }
 
   /** Force a partial state for testing; cleared with `clearOverride()`. */
   override(partial) {
@@ -84,6 +88,7 @@ export class InputHub {
     for (const b of BUTTONS) s[b] = r[b];
     s.slot = r.slot;
     s.buildPiece = r.buildPiece;
+    s.buildMaterial = r.buildMaterial;
 
     if (this._override) {
       const o = this._override;
@@ -92,6 +97,7 @@ export class InputHub {
       for (const b of BUTTONS) if (b in o) s[b] = !!o[b];
       if ('slot' in o) s.slot = o.slot;
       if ('buildPiece' in o) s.buildPiece = o.buildPiece;
+      if ('buildMaterial' in o) s.buildMaterial = o.buildMaterial;
     }
 
     if (!this.enabled) {
@@ -109,6 +115,7 @@ export class InputHub {
     this.raw.look.dx = 0; this.raw.look.dy = 0;
     // One-shot selections clear after publication.
     this.raw.slot = -1;
+    this.raw.buildMaterial = null;
   }
 
   dispose() { for (const s of this.sources) if (s.dispose) s.dispose(); }

@@ -231,8 +231,25 @@ function stairBoxes() {
   return out;
 }
 
+/**
+ * Collision for a door panel: the lintel above the opening and the jamb either
+ * side, with the doorway itself left open. A single box for the whole panel
+ * renders a doorway you can see through and walk into but never through, which
+ * is what made some buildings impossible to enter.
+ */
+function doorBoxes() {
+  const dw = 1.25, dh = 2.4;
+  const side = (MODULE - dw) / 2;
+  return [
+    { cx: 0, cy: dh + (MODULE - dh) / 2, cz: 0, hx: MODULE / 2, hy: (MODULE - dh) / 2, hz: WALL_T / 2 },
+    { cx: -(dw / 2 + side / 2), cy: dh / 2, cz: 0, hx: side / 2, hy: dh / 2, hz: WALL_T / 2 },
+    { cx: dw / 2 + side / 2, cy: dh / 2, cz: 0, hx: side / 2, hy: dh / 2, hz: WALL_T / 2 },
+  ];
+}
+
 const SHAPES = {
   stair: stairBoxes(),
+  wallDoor: doorBoxes(),
   // A pyramid roof is walkable in this genre, so it is approximated by three
   // stacked slabs rather than one box: a single box would let a player stand in
   // mid-air at the pyramid's corners.

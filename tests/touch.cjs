@@ -271,12 +271,17 @@ async function main() {
       const r = rects.aim;
       await touch(cdp, 'touchStart', [{ x: r.x, y: r.y, id: 13 }]);
       await S(page, 6);
-      const aiming = await page.evaluate(() => window.__GAME.state().player.aiming);
+      // ADS is a toggle, not a hold: holding it would occupy the same thumb
+      // that has to fire, which is what made aim-and-shoot impossible.
       await touch(cdp, 'touchEnd', [{ x: r.x, y: r.y, id: 13 }]);
       await S(page, 4);
-      const after = await page.evaluate(() => window.__GAME.state().player.aiming);
-      ok = check('ADS engages while held', aiming === true && after === false,
-        `aiming ${aiming} -> ${after}`) && ok;
+      const on = await page.evaluate(() => window.__GAME.state().player.aiming);
+      await touch(cdp, 'touchStart', [{ x: r.x, y: r.y, id: 14 }]);
+      await touch(cdp, 'touchEnd', [{ x: r.x, y: r.y, id: 14 }]);
+      await S(page, 4);
+      const off = await page.evaluate(() => window.__GAME.state().player.aiming);
+      ok = check('ADS latches on one tap and releases on the next',
+        on === true && off === false, `aiming ${on} -> ${off}`) && ok;
     }
 
     {
@@ -375,17 +380,64 @@ async function main() {
     /* --- 8. sliding off a button releases it ---------------------------- */
     {
       await reset(page);
-      const r = rects.fire;
+      const r = rects.jump;
       await touch(cdp, 'touchStart', [{ x: r.x, y: r.y, id: 22 }]);
-      const held = await page.evaluate(() => window.__GAME.input.raw().fire);
-      await touch(cdp, 'touchMove', [{ x: r.x - 220, y: r.y - 120, id: 22 }]);
-      const slid = await page.evaluate(() => window.__GAME.input.raw().fire);
+      const held = await page.evaluate(() => window.__GAME.input.raw().jump);
+      await touch(cdp, 'touchMove', [{ x: r.x - 260, y: r.y - 150, id: 22 }]);
+      const slid = await page.evaluate(() => window.__GAME.input.raw().jump);
       await touch(cdp, 'touchMove', [{ x: r.x, y: r.y, id: 22 }]);
-      const back = await page.evaluate(() => window.__GAME.input.raw().fire);
+      const back = await page.evaluate(() => window.__GAME.input.raw().jump);
       await touch(cdp, 'touchEnd', [{ x: r.x, y: r.y, id: 22 }]);
       ok = check('sliding off a held button releases it, sliding back re-arms',
         held === true && slid === false && back === true,
         `held=${held} slidOff=${slid} slidBack=${back}`) && ok;
+    }
+
+    /* --- 8b. fire-drag: keep shooting while aiming with the same thumb --- */
+    {
+      await reset(page);
+      const r = rects.fire;
+      const y0 = await page.evaluate(() => window.__GAME.state().player.yaw);
+      await touch(cdp, 'touchStart', [{ x: r.x, y: r.y, id: 23 }]);
+      const held = await page.evaluate(() => window.__GAME.input.raw().fire);
+      // Drag the firing thumb sideways: fire must stay held and the view turn.
+      for (let i = 1; i <= 10; i++) {
+        await touch(cdp, 'touchMove', [{ x: r.x - i * 16, y: r.y - i * 4, id: 23 }]);
+        await S(page, 1);
+      }
+      const stillFiring = await page.evaluate(() => window.__GAME.input.raw().fire);
+      const y1 = await page.evaluate(() => window.__GAME.state().player.yaw);
+      await touch(cdp, 'touchEnd', [{ x: r.x - 160, y: r.y - 40, id: 23 }]);
+      await S(page, 2);
+      const released = await page.evaluate(() => window.__GAME.input.raw().fire);
+      const turned = Math.abs(y1 - y0);
+      ok = check('holding FIRE and dragging both shoots and turns the view',
+        held === true && stillFiring === true && released === false && turned > 0.15,
+        `fire held=${held} during drag=${stillFiring} released=${released}, yaw moved ${fmt(turned, 3)} rad`) && ok;
+    }
+
+    /* --- 8c. the look zone is not eaten by button hit areas ------------- */
+    {
+      await reset(page);
+      // Sample the region a right thumb actually sweeps to aim. The outer
+      // corners are legitimately button territory; the middle of the screen
+      // never is, because a look drag that begins there must not become a
+      // button press.
+      const stolen = await page.evaluate(() => {
+        const t = window.__GAME.engine.services.get('touch');
+        const w = window.innerWidth, h = window.innerHeight;
+        const bad = [];
+        for (let gx = 0.42; gx <= 0.74; gx += 0.04) {
+          for (let gy = 0.12; gy <= 0.88; gy += 0.08) {
+            const x = w * gx, y = h * gy;
+            const hit = t._hitTest(x, y);
+            if (hit) bad.push(gx.toFixed(2) + ',' + gy.toFixed(2) + '=' + hit.id);
+          }
+        }
+        return bad;
+      });
+      ok = check('the central look zone is clear of every button hit area',
+        stolen.length === 0, stolen.length ? stolen.join(' ') : 'all sample points free') && ok;
     }
 
     /* --- 9. dead zone and range ----------------------------------------- */

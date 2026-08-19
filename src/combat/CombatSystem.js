@@ -55,6 +55,7 @@ export class CombatSystem {
     this.rig = services.get('cameraRig');
     this.build = services.get('build');
     this.structures = services.get('structures');
+    this.vegetation = services.peek('vegetation');
     this.bus = services.get('bus');
     this.materials = services.get('materials');
 
@@ -197,7 +198,9 @@ export class CombatSystem {
     if (isPlayer && this.rig) this.camera.getWorldDirection(_dir);
     else shooter.lookDirection(_dir);
 
-    const cone = this.currentSpread(w, shooter);
+    // A melee swing is a short sweep along the look axis with no cone: it
+    // either reaches what the crosshair covers or it does not.
+    const cone = def.class === 'melee' ? 0 : this.currentSpread(w, shooter);
     const pellets = def.pellets || 1;
     let anyHit = false;
 
@@ -231,7 +234,11 @@ export class CombatSystem {
       shooter, weapon: w.id, rarity: w.rarity, sound: def.sound,
       origin: _origin.clone(), dir: _dir.clone(), hit: anyHit,
       ammo: w.ammo, projectile: !!def.projectileSpeed,
+      // A melee swing has no muzzle and no bullet: the FX layer must not draw
+      // a flash or a tracer for it, and the character swings rather than aims.
+      melee: def.class === 'melee',
     });
+    if (def.class === 'melee' && shooter.mesh && shooter.mesh.swing) shooter.mesh.swing();
     if (w.ammo === 0 && isPlayer) this.beginReload();
     return true;
   }
@@ -328,11 +335,21 @@ export class CombatSystem {
       return;
     }
 
-    if ((meta.type === 'tree' || meta.type === 'rock') && shooter === this.player && def.harvestPower) {
-      const kind = meta.harvest || 'wood';
-      const amount = def.harvestPower;
-      this.build.addResource(kind, amount);
-      this.bus.queue('resource:gained', { kind, amount, x: hit.point.x, y: hit.point.y, z: hit.point.z });
+    if (meta.type === 'tree' || meta.type === 'rock') {
+      // Props have health and are felled by harvesting them, so a single tree
+      // is a finite pile of wood rather than an infinite tap. The yield is the
+      // damage the prop actually absorbed, which keeps the total per prop
+      // fixed no matter which tool chews through it.
+      const dealt = this.vegetation && meta.prop
+        ? this.vegetation.damageProp(meta.prop, def.harvestPower || Math.round(w.damage * 0.4))
+        : 0;
+      if (shooter === this.player && dealt > 0) {
+        const kind = meta.harvest || 'wood';
+        this.build.addResource(kind, Math.round(dealt));
+        this.bus.queue('resource:gained', {
+          kind, amount: Math.round(dealt), x: hit.point.x, y: hit.point.y, z: hit.point.z,
+        });
+      }
     }
   }
 

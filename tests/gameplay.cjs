@@ -708,6 +708,167 @@ const SUITE = `async () => {
              detail: 'dist ' + dist.toFixed(2) + 'm, behindness ' + dot.toFixed(2) };
   });
 
+  t('structures: a doorway is actually walk-through, not just drawn', () => {
+    // The door panel draws an opening but used to collide as a solid slab, so
+    // buildings looked enterable and were not.
+    const kit = structures.kit;
+    const before = kit.records.length;
+    const rid = kit.place('wallDoor', 300, 40, 300, 0, { key: 'wood', tint: 0x8a6a44, hp: 100 });
+    const out = [];
+    // A capsule-sized probe in the middle of the opening must find nothing.
+    const hitsDoorway = colliders.query(299.7, 40.3, 299.9, 300.3, 42.2, 300.1, out);
+    // The lintel above it must still be solid, or the panel has no collision.
+    out.length = 0;
+    const hitsLintel = colliders.query(299.5, 43.2, 299.9, 300.5, 43.8, 300.1, out);
+    kit.destroy(rid);
+    return {
+      ok: !hitsDoorway && hitsLintel && kit.records.length >= before,
+      detail: 'doorway clear: ' + !hitsDoorway + ', lintel solid: ' + hitsLintel,
+    };
+  });
+
+  t('harvest: a tree yields a fixed amount of wood and then falls', () => {
+    // An indestructible harvest source is an infinite material tap, which
+    // removes every resource decision the build game is made of.
+    const veg = G.engine.services.get('vegetation');
+    const combat = G.engine.services.get('combat');
+    let tree = null;
+    for (const lists of veg.chunkProps.values()) {
+      for (const t of lists.tree) if (!t.dead) { tree = t; break; }
+      if (tree) break;
+    }
+    if (!tree) return { ok: false, detail: 'no tree to chop' };
+    const before = build.resources.wood | 0;
+    const hp0 = tree.hp;
+    let swings = 0;
+    while (!tree.dead && swings < 40) { veg.damageProp(tree, 34); swings++; }
+    const yielded = hp0;
+    return {
+      ok: tree.dead && tree.hp <= 0 && swings > 1 && swings < 12 && yielded === hp0,
+      detail: swings + ' swings to fell, ' + yielded + ' material, wood was ' + before,
+    };
+  });
+
+  t('harvest: a felled tree stops colliding and stops being drawn', () => {
+    const veg = G.engine.services.get('vegetation');
+    let tree = null;
+    for (const lists of veg.chunkProps.values()) {
+      for (const t of lists.tree) if (!t.dead) { tree = t; break; }
+      if (tree) break;
+    }
+    if (!tree) return { ok: false, detail: 'no tree to chop' };
+    const handle = tree.handle;
+    veg.damageProp(tree, 1e9);
+    const out = [];
+    colliders.query(tree.x - 1, tree.y - 1, tree.z - 1, tree.x + 1, tree.y + 8, tree.z + 1, out);
+    const stillThere = out.includes(handle);
+    return { ok: tree.dead && !stillThere, detail: 'collider removed: ' + !stillThere };
+  });
+
+  t('pickaxe: swinging draws no muzzle flash and no tracer', () => {
+    // A melee tool that emits gunfire FX reads as a weapon that fires
+    // invisible bullets, which is exactly how it was reported.
+    const combat = G.engine.services.get('combat');
+    combat.selectSlot(0);
+    let melee = null;
+    G.engine.bus.on('weapon:fired', (e) => { melee = e.melee; });
+    combat.weapon.cooldown = 0;
+    combat.fire(player);
+    G.engine.bus.flush();
+    const tracersBefore = fx.tracers.active;
+    G.stepSim(2);
+    return {
+      ok: melee === true,
+      detail: 'melee flag on weapon:fired = ' + melee + ', tracers ' + tracersBefore,
+    };
+  });
+
+  t('build: the material can be switched from the input layer', () => {
+    // Being locked to one material means running out of wood locks the player
+    // out of building entirely, however much brick and metal they carry.
+    build.resources = { wood: 500, brick: 500, metal: 500 };
+    const seen = [];
+    for (const key of ['brick', 'metal', 'wood']) {
+      // buildMode has to come through the input hub: BuildSystem re-derives
+      // its active flag from it every step, so setting the flag directly is
+      // undone on the next simulation step.
+      G.input.override({ buildMode: true, buildMaterial: key });
+      G.stepSim(2);
+      seen.push(build.material);
+    }
+    G.input.clearOverride();
+    G.stepSim(2);
+    return {
+      ok: seen.join(',') === 'brick,metal,wood',
+      detail: 'selected ' + seen.join(' -> '),
+    };
+  });
+
+  t('sprint: pushing the stick to its outer ring runs', () => {
+    G.input.override({ move: { x: 0, y: 1 }, sprint: true });
+    G.stepSim(60);
+    const fast = player.speed;
+    G.input.override({ move: { x: 0, y: 0.5 }, sprint: false });
+    G.stepSim(60);
+    const walk = player.speed;
+    G.input.clearOverride();
+    G.stepSim(20);
+    return {
+      ok: fast > walk * 1.25 && fast > 6.5,
+      detail: 'sprint ' + fast.toFixed(2) + ' m/s vs walk ' + walk.toFixed(2),
+    };
+  });
+
+  t('match: leaving to the title idles the match, storm and bots', () => {
+    const match = G.engine.services.get('match');
+    const screens = G.engine.services.get('screens');
+    match.startMatch();
+    const running = match.state;
+    screens.toTitle();
+    const idle = match.state === 0 && !storm.active && bots.aliveCount === 0;
+    screens.show(null);
+    return {
+      ok: running !== 0 && idle,
+      detail: 'state ' + running + ' -> ' + match.state + ', storm ' + storm.active + ', bots ' + bots.aliveCount,
+    };
+  });
+
+  t('weapon: the barrel points where the player is looking, aiming or not', () => {
+    // The held weapon rides the arm bone, which hangs straight down at rest.
+    // Without a carry pose the idle barrel aims at the sky, which reads as the
+    // character holding the gun the wrong way round. Both poses are checked
+    // because they are posed by different blends.
+    const combat = G.engine.services.get('combat');
+    combat.slots[1] = combat.slots[1] || null;
+    if (!combat.slots[1]) combat.giveWeapon('ar', 'rare', 1);
+    combat.selectSlot(1);
+    // The arm pose is driven by the pitch handed to the animator, so the
+    // comparison is only meaningful with the two agreeing. Level the view.
+    player.pitch = 0;
+    player.crouching = false;
+    const look = player.lookDirection(new THREE.Vector3());
+    const out = [];
+    for (const aim of [false, true]) {
+      player.aiming = aim;
+      // Pose the character exactly as PlayerController.update would: the root
+      // yaw is set there, not by the animator, and a stale yaw would make the
+      // barrel look wrong for reasons that have nothing to do with the pose.
+      for (let i = 0; i < 120; i++) player.update(1 / 60);
+      player.mesh.root.updateMatrixWorld(true);
+      const g = combat.held.mesh;
+      g.updateMatrixWorld(true);
+      const e = g.matrixWorld.elements;   // third basis column = model +Z, the barrel
+      const b = new THREE.Vector3(e[8], e[9], e[10]).normalize();
+      out.push({ aim, dot: b.dot(look) });
+    }
+    player.aiming = false;
+    const worst = Math.min(...out.map((o) => o.dot));
+    return {
+      ok: worst > 0.9,
+      detail: out.map((o) => (o.aim ? 'ads' : 'hip') + ' ' + o.dot.toFixed(3)).join(', '),
+    };
+  });
+
   t('camera: aiming pulls the rig in and narrows the FOV', () => {
     placeClear();
     rig.enabled = true;
@@ -1288,8 +1449,12 @@ const SUITE = `async () => {
     clearBuilds();
     // Find a tree and stand next to it.
     let tree = null;
-    for (const lists of veg.chunkProps.values()) { if (lists.tree.length) { tree = lists.tree[0]; break; } }
-    if (!tree) return { ok: false, detail: 'no tree in the world' };
+    // Trees are felled by harvesting now, so pick one that is still standing.
+    for (const lists of veg.chunkProps.values()) {
+      for (const t of lists.tree) if (!t.dead) { tree = t; break; }
+      if (tree) break;
+    }
+    if (!tree) return { ok: false, detail: 'no standing tree in the world' };
     combat.slots[0] = makeWeapon('pickaxe');
     combat.activeSlot = 0;
     combat.weapon.cooldown = 0;
@@ -1303,6 +1468,74 @@ const SUITE = `async () => {
     combat.fire(player);
     const gained = build.resources.wood - wood0;
     return { ok: gained > 0, detail: 'gained ' + gained + ' wood from one swing' };
+  });
+
+  // Placing a wall in front of the player and returning both the record and a
+  // stance close enough to melee it. Shared by the two destructibility tests.
+  const placeTestWall = () => {
+    build.resources = { wood: 500, brick: 500, metal: 500 };
+    buildStance(0);
+    build.computeTarget();
+    if (!build.place()) return null;
+    const rec = build.kit.records[build.kit.records.length - 1];
+    rec.meta.hp = rec.meta.maxHp;             // skip the build-in health ramp
+    settle(2);
+    return rec;
+  };
+
+  t('build: your own walls take gunfire and fall down', () => {
+    // Arm first: the helper clears every placed piece, which would take the
+    // test wall with it.
+    armed('ar');
+    const rec = placeTestWall();
+    if (!rec) return { ok: false, detail: 'could not place the test wall' };
+    const hp0 = rec.meta.hp;
+    combat.selectSlot(1);
+    // The player fires along the camera axis, and buildStance moved them, so
+    // point the camera at the wall that was just placed.
+    const t0 = build.preview;
+    const eye = player.eyePosition(new THREE.Vector3());
+    G.engine.camera.position.copy(eye);
+    G.engine.camera.lookAt(t0.x, t0.y + 1.4, t0.z);
+    G.engine.camera.updateMatrixWorld(true);
+    let shots = 0;
+    while (rec.alive && shots < 200) {
+      combat.weapon.cooldown = 0;
+      combat.fire(player);
+      shots++;
+    }
+    clearBuilds();
+    return {
+      ok: !rec.alive && shots >= 1 && shots < 200 && hp0 > 0,
+      detail: hp0 + ' hp wall destroyed by ' + shots + ' rifle rounds',
+    };
+  });
+
+  t('build: your own walls can be knocked down with the pickaxe', () => {
+    const rec = placeTestWall();
+    if (!rec) return { ok: false, detail: 'could not place the test wall' };
+    // Step up to the wall: the pickaxe only reaches 3.2m and a piece is placed
+    // further out than that.
+    const t0 = build.preview;
+    const dx = t0.x - player.position.x, dz = t0.z - player.position.z;
+    const d = Math.hypot(dx, dz);
+    player.spawnAt(t0.x - dx / d * 1.8, t0.z - dz / d * 1.8, 0);
+    player.yaw = Math.atan2(-dx, -dz);
+    player.pitch = 0;
+    settle(4);
+    combat.slots[0] = makeWeapon('pickaxe');
+    combat.selectSlot(0);
+    let swings = 0;
+    while (rec.alive && swings < 100) {
+      combat.weapon.cooldown = 0;
+      combat.fire(player);
+      swings++;
+    }
+    clearBuilds();
+    return {
+      ok: !rec.alive && swings >= 1 && swings < 100,
+      detail: 'destroyed in ' + swings + ' pickaxe swings',
+    };
   });
 
   t('combat: aiming tightens the cone and movement widens it', () => {

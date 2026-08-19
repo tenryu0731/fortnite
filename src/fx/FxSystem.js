@@ -193,6 +193,10 @@ export class FxSystem {
   /* ------------------------------------------------------------------ */
 
   onFired(e) {
+    // A pickaxe has no muzzle. Drawing a flash and a tracer for it was the
+    // single most confusing thing in the game: the tool looked like it fired
+    // invisible bullets.
+    if (e.melee) return;
     if (e.shooter === this.player || this._nearCamera(e.origin, 90)) {
       // Shots are traced from the eye so the reticle is honest, but the flash
       // and tracer must appear to leave the barrel, not the character's face.

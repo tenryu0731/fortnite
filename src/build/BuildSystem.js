@@ -538,6 +538,7 @@ export class BuildSystem {
     }
 
     if (s.buildPiece !== this.piece) this.setPiece(s.buildPiece);
+    if (s.buildMaterial) this.setMaterial(s.buildMaterial);
     if (this.input.pressed.buildRotate) this.rotate();
 
     if (this.input.pressed.editMode) {

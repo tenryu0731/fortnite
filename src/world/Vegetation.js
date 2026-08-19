@@ -18,6 +18,12 @@ import { SCATTER, SEA_LEVEL } from './Biome.js';
  * tighter threshold because popping is far more visible up close.
  */
 const CHUNK = 128;
+// Harvest health. Tuned so a pickaxe (34 power, 1.4 swings/s) fells a tree in
+// about four swings and a boulder in five — long enough to be a commitment
+// mid-fight, short enough that gathering a fort's worth of material is quick.
+const TREE_HP = 120;
+const ROCK_HP = 150;
+
 const REFRESH_DIST = 24;      // metres of camera travel before repacking props
 const GRASS_REFRESH = 7;
 
@@ -44,6 +50,7 @@ export class Vegetation {
     this.materials = services.get('materials');
     this.colliders = services.get('colliders');
     this.structures = services.peek('structures') || null;
+    this.bus = services.get('bus');
 
     this.group = new THREE.Group();
     this.group.name = 'vegetation';
@@ -167,24 +174,46 @@ export class Vegetation {
     }
 
     // Static collision: trunks and boulders. Foliage is walk-through.
+    // Each prop carries its own health so it can be chopped down: harvesting a
+    // source that never depletes hands the player unlimited material, which
+    // removes the whole point of looting and rotating for resources.
     const min = new THREE.Vector3(), max = new THREE.Vector3();
+    const register = (t, list, type, harvest, hp, r, y0, y1) => {
+      min.set(t.x - r, t.y + y0, t.z - r);
+      max.set(t.x + r, t.y + y1, t.z + r);
+      t.hp = hp; t.maxHp = hp; t.list = list; t.kind = type;
+      t.handle = this.colliders.add(min, max, {
+        type, harvest, x: t.x, y: t.y, z: t.z, prop: t,
+      });
+    };
     for (const lists of this.chunkProps.values()) {
-      for (const t of lists.tree) {
-        const r = 0.42 * t.scale;
-        min.set(t.x - r, t.y, t.z - r); max.set(t.x + r, t.y + 7 * t.scale, t.z + r);
-        this.colliders.add(min, max, { type: 'tree', harvest: 'wood', x: t.x, y: t.y, z: t.z });
-      }
-      for (const t of lists.pine) {
-        const r = 0.4 * t.scale;
-        min.set(t.x - r, t.y, t.z - r); max.set(t.x + r, t.y + 9 * t.scale, t.z + r);
-        this.colliders.add(min, max, { type: 'tree', harvest: 'wood', x: t.x, y: t.y, z: t.z });
-      }
-      for (const t of lists.rock) {
-        const r = 1.0 * t.scale;
-        min.set(t.x - r, t.y - 0.4, t.z - r); max.set(t.x + r, t.y + r * 0.9, t.z + r);
-        this.colliders.add(min, max, { type: 'rock', harvest: 'brick', x: t.x, y: t.y, z: t.z });
+      for (const t of lists.tree) register(t, lists.tree, 'tree', 'wood', TREE_HP, 0.42 * t.scale, 0, 7 * t.scale);
+      for (const t of lists.pine) register(t, lists.pine, 'tree', 'wood', TREE_HP, 0.4 * t.scale, 0, 9 * t.scale);
+      for (const t of lists.rock) register(t, lists.rock, 'rock', 'brick', ROCK_HP, 1.0 * t.scale, -0.4, 1.0 * t.scale * 0.9);
+    }
+  }
+
+  /**
+   * Damage a harvestable prop. Returns the material yielded, which is the
+   * damage actually absorbed rather than the swing's nominal power — the last
+   * hit on a nearly-felled tree pays out only what was left, so total yield per
+   * tree is fixed no matter what tool is used on it.
+   */
+  damageProp(prop, amount) {
+    if (!prop || prop.dead) return 0;
+    const dealt = Math.min(prop.hp, amount);
+    prop.hp -= dealt;
+    if (prop.hp <= 0) {
+      prop.dead = true;
+      if (prop.handle !== undefined) this.colliders.remove(prop.handle);
+      // The instance buffers are rebuilt from the prop lists, so a felled prop
+      // disappears on the next repack; force one so it goes immediately.
+      this.repack(true);
+      if (this.bus) {
+        this.bus.queue('prop:destroyed', { kind: prop.kind, x: prop.x, y: prop.y, z: prop.z, scale: prop.scale });
       }
     }
+    return dealt;
   }
 
   _buildInstancedMeshes() {
@@ -258,6 +287,7 @@ export class Vegetation {
       const lists = this.chunkProps.get(c.key);
 
       for (const t of lists.tree) {
+        if (t.dead) continue;
         const dx = t.x - cam.x, dz = t.z - cam.z;
         const d2 = dx * dx + dz * dz;
         if (d2 > far2) continue;
@@ -276,6 +306,7 @@ export class Vegetation {
       }
 
       for (const t of lists.pine) {
+        if (t.dead) continue;
         const dx = t.x - cam.x, dz = t.z - cam.z;
         const d2 = dx * dx + dz * dz;
         if (d2 > far2) continue;
@@ -294,6 +325,7 @@ export class Vegetation {
       }
 
       for (const t of lists.rock) {
+        if (t.dead) continue;
         const dx = t.x - cam.x, dz = t.z - cam.z;
         if (dx * dx + dz * dz > far2) continue;
         if (c8.rock >= limit.rock) continue;

@@ -74,6 +74,13 @@ async function capture(page, scn, file) {
   };
   await page.evaluate((s) => {
     window.__GAME.deterministic(true);
+    // A page opened without ?scenario= boots behind the start screen, which
+    // covered every capture with the title card — including the touch_*
+    // scenarios that exist specifically to watch the control layout. Dismiss
+    // it before anything else; scenarios that want a screen up (screen_result)
+    // put it back themselves.
+    const screens = window.__GAME.engine.services.peek('screens');
+    if (screens) screens.show(null);
     // The gallery scene boots without the game's UI layer at all.
     if (window.__GAME.debug && window.__GAME.debug.setUiVisible) window.__GAME.debug.setUiVisible(s.showUi);
     if (s.scenario) window.__GAME.scenario(s.scenario, s.options || {});
@@ -84,6 +91,13 @@ async function capture(page, scn, file) {
   // Re-apply after stepping so streaming systems settle at the final pose.
   if (scn.scenario) await page.evaluate((s) => window.__GAME.scenario(s), scn.scenario);
   if (scn.after) await scn.after(page);
+  // The minimap paints on its own throttled cadence, which deterministic mode
+  // freezes — so every UI capture showed an empty dial and the radar was never
+  // actually covered by visual regression. Force one paint.
+  await page.evaluate(() => {
+    const m = window.__GAME.engine.services.peek('minimap');
+    if (m && m.visible) m.draw();
+  });
   await page.evaluate(() => { window.__GAME.renderOnly(2); });
   await page.screenshot({ path: file, animations: 'disabled', caret: 'hide' });
 }

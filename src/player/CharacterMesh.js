@@ -18,6 +18,22 @@ import { srgbHex } from '../gen/Palette.js';
 
 const HEIGHT = 1.8;
 const HIP_Y = 0.88;
+// One pickaxe swing, matched to the tool's 1.4/s fire rate so the animation
+// finishes just before the next swing is allowed.
+const SWING_TIME = 0.42;
+// Low-ready carry. The weapon socket rides the arm bone, which hangs straight
+// down when the arm is lowered — so a rifle at rest ends up aimed at the sky.
+// This pitches the socket back to horizontal (plus a touch of muzzle-down) so
+// the idle pose reads as carrying a weapon rather than holding it upside down.
+// It blends out as the aim pose takes over, where the raised arm already
+// points the barrel correctly.
+const CARRY_PITCH = Math.PI / 2 + 0.18;
+const CARRY_ROLL = 0.22;
+// The aim pose stops the arm just under horizontal so the barrel does not
+// cross the character's own head from the over-shoulder camera; that leaves
+// the weapon tilted about 22 degrees up, which this levels back out so the
+// muzzle agrees with the crosshair.
+const AIM_PITCH = 0.38;
 const SHOULDER_Y = 0.52;      // relative to hips
 const ARM_LEN = 0.62;
 const LEG_LEN = HIP_Y;
@@ -112,17 +128,24 @@ export class CharacterMesh {
 
     this.phase = rng.range(0, Math.PI * 2);
     this.aimBlend = 0;
+    this.swingTimer = 0;
     this.crouchBlend = 0;
     this.airBlend = 0;
     this.lean = 0;
     this.height = HEIGHT;
   }
 
+  /** Start a melee swing; the arm arcs over the next `SWING_TIME` seconds. */
+  swing() { this.swingTimer = SWING_TIME; }
+
   /**
    * Advance the animation.
    * `p` = { speed, maxSpeed, grounded, crouch, aim, yaw, pitch, strafe }
    */
   update(dt, p) {
+    // A melee swing overrides the aim pose entirely: an overhead chop reads as
+    // a tool being used, where the rifle-carry pose reads as aiming a gun.
+    if (this.swingTimer > 0) this.swingTimer = Math.max(0, this.swingTimer - dt);
     const speed = p.speed || 0;
     const maxSpeed = p.maxSpeed || 7.2;
     const norm = Math.min(1, speed / maxSpeed);
@@ -164,6 +187,20 @@ export class CharacterMesh {
     this.armR.rotation.z = -0.10 - this.aimBlend * 0.12 + this.airBlend * -0.5;
     this.armL.rotation.z = 0.10 + this.aimBlend * 0.42 + this.airBlend * 0.5;
 
+    // Overhead chop: wind up fast, strike through, recover. `t` runs 1 -> 0.
+    if (this.swingTimer > 0) {
+      const t = this.swingTimer / SWING_TIME;
+      // Windup occupies the first third, the strike the rest, so the arc
+      // accelerates into the hit the way a swung tool does.
+      const arc = t > 0.66 ? (1 - t) / 0.34 : (t / 0.66) ** 0.6;
+      this.armR.rotation.x = -2.5 + arc * 3.4;
+      this.armR.rotation.z = -0.10 - arc * 0.25;
+      this.torso.rotation.y = (p.torsoYaw || 0) - arc * 0.30;
+    }
+
+    this.weaponSocket.rotation.x = -CARRY_PITCH * (1 - this.aimBlend) - AIM_PITCH * this.aimBlend;
+    this.weaponSocket.rotation.z = CARRY_ROLL * (1 - this.aimBlend);
+
     // Torso: vertical bob, forward lean with speed, roll into strafes.
     const bob = Math.abs(swing2) * 0.035 * norm * (1 - this.airBlend);
     const crouchDrop = this.crouchBlend * 0.34;
@@ -173,7 +210,8 @@ export class CharacterMesh {
     this.torso.rotation.x = this.lean + this.crouchBlend * 0.30;
     this.torso.rotation.z = (p.strafe || 0) * -0.08;
     // Head/torso yaw offset so the upper body tracks where the player looks.
-    this.torso.rotation.y = (p.torsoYaw || 0);
+    // A swing already set this above and must win.
+    if (this.swingTimer <= 0) this.torso.rotation.y = (p.torsoYaw || 0);
   }
 
   /** Total collision height for the current pose. */
