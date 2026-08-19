@@ -19,6 +19,10 @@ const CHUNK = 128;
 const LOD_SEGS = [64, 32, 16, 8];          // vertices per side - 1
 const LOD_DIST = [190, 340, 560, Infinity]; // metres, scaled by quality bias
 const MAX_BUILDS_PER_FRAME = 2;
+// Vertices of meshing work allowed per frame. A near chunk is 65x65 = 4225
+// vertices, so it spreads over roughly four frames instead of landing as one
+// multi-millisecond hitch; a far chunk is 81 and several fit in one frame.
+const VERTEX_BUDGET_PER_FRAME = 1100;
 
 const _v = new THREE.Vector3();
 const _box = new THREE.Box3();
@@ -33,6 +37,7 @@ export class Terrain {
     this.chunksPerSide = Math.ceil(this.size / CHUNK);
     this.chunks = [];
     this.queue = [];
+    this.job = null;                 // in-flight, partially meshed chunk
     this.frustum = new THREE.Frustum();
     this._projScreen = new THREE.Matrix4();
     this.stats = { visible: 0, built: 0, queued: 0, triangles: 0 };
@@ -119,30 +124,48 @@ export class Terrain {
   /* chunk meshing                                                       */
   /* ------------------------------------------------------------------ */
 
-  _buildChunkGeometry(c, lod) {
+  /**
+   * Start a resumable meshing job for one chunk.
+   *
+   * A near chunk is 4225 vertices of height, normal, moisture and biome-colour
+   * sampling — several milliseconds in one go, which is a dropped frame every
+   * time the player crosses an LOD ring at sprint speed. The job holds its own
+   * buffers and a row cursor so `_stepChunkJob` can fill it a few rows at a
+   * time; the chunk keeps rendering its previous geometry until the job
+   * completes, so nothing pops and nothing hitches.
+   */
+  _startChunkJob(c, lod) {
     const segs = LOD_SEGS[lod];
-    const cell = CHUNK / segs;
     const vpr = segs + 1;                    // vertices per row
     const gridVerts = vpr * vpr;
-    const skirtVerts = vpr * 4;
-    const total = gridVerts + skirtVerts;
+    const total = gridVerts + vpr * 4;
+    return {
+      c, lod, segs, vpr, gridVerts, total,
+      cell: CHUNK / segs,
+      pos: new Float32Array(total * 3),
+      nrm: new Float32Array(total * 3),
+      uv: new Float32Array(total * 2),
+      col: new Float32Array(total * 3),
+      idx: new Uint32Array(segs * segs * 6 + segs * 4 * 6),
+      row: 0,
+      minY: Infinity,
+      maxY: -Infinity,
+    };
+  }
 
-    const pos = new Float32Array(total * 3);
-    const nrm = new Float32Array(total * 3);
-    const uv = new Float32Array(total * 2);
-    const col = new Float32Array(total * 3);
-    const idx = new Uint32Array(segs * segs * 6 + segs * 4 * 6);
-
+  /**
+   * Sample up to `vertBudget` vertices into the job. Returns the number of
+   * vertices actually written; the job is finished when `row === vpr`.
+   */
+  _stepChunkJob(job, vertBudget) {
+    const { c, vpr, cell, pos, nrm, uv, col } = job;
     const field = this.field;
     const rgb = [0, 0, 0];
-    const nv = new THREE.Vector3();
-    // Skirt depth must exceed the largest elevation difference the coarser
-    // neighbour could introduce across one of its cells.
-    const skirtDepth = cell * 2.5 + 2;
+    const nv = _v;
+    const rows = Math.max(1, Math.min(vpr - job.row, Math.floor(vertBudget / vpr)));
+    let minY = job.minY, maxY = job.maxY;
 
-    let minY = Infinity, maxY = -Infinity;
-
-    for (let j = 0; j < vpr; j++) {
+    for (let j = job.row; j < job.row + rows; j++) {
       const z = c.z0 + j * cell;
       for (let i = 0; i < vpr; i++) {
         const x = c.x0 + i * cell;
@@ -163,6 +186,20 @@ export class Terrain {
         col[k * 3] = rgb[0]; col[k * 3 + 1] = rgb[1]; col[k * 3 + 2] = rgb[2];
       }
     }
+    job.row += rows;
+    job.minY = minY; job.maxY = maxY;
+    return rows * vpr;
+  }
+
+  /** Turn a fully sampled job into a BufferGeometry: indices, skirts, bounds. */
+  _finishChunkJob(job) {
+    const { c, segs, vpr, gridVerts, pos, nrm, uv, col, idx } = job;
+    const cell = job.cell;
+    const rgb = [0, 0, 0];
+    // Skirt depth must exceed the largest elevation difference the coarser
+    // neighbour could introduce across one of its cells.
+    const skirtDepth = cell * 2.5 + 2;
+    const minY = job.minY, maxY = job.maxY;
 
     let t = 0;
     for (let j = 0; j < segs; j++) {
@@ -224,8 +261,7 @@ export class Terrain {
     return geo;
   }
 
-  _applyChunk(c, lod) {
-    const geo = this._buildChunkGeometry(c, lod);
+  _applyChunk(c, lod, geo) {
     if (c.mesh) {
       c.mesh.geometry.dispose();
       c.mesh.geometry = geo;
@@ -293,22 +329,51 @@ export class Terrain {
     this.stats.triangles = tris;
   }
 
-  /** Process queued rebuilds nearest-first, bounded per frame. */
-  flushQueue(limit = MAX_BUILDS_PER_FRAME) {
-    if (this.queue.length === 0) return 0;
+  /**
+   * Advance chunk meshing, nearest-first, within a per-frame vertex budget.
+   *
+   * The budget counts vertices rather than chunks because a rebuild's cost is
+   * the sampling work, and "two chunks" is anywhere from 162 to 8450 vertices
+   * depending on which LOD ring was crossed. Work resumes mid-chunk across
+   * frames, so even a full near-LOD rebuild never lands as one hitch. The
+   * budget is derived from geometry, never from a clock, so a fixed sequence
+   * of steps always produces the same meshes.
+   *
+   * Returns the number of chunks completed.
+   */
+  flushQueue(limit = MAX_BUILDS_PER_FRAME, vertBudget = VERTEX_BUDGET_PER_FRAME) {
+    if (!this.job && this.queue.length === 0) return 0;
+    // A full flush is a settle request (boot, scenario capture), not a frame
+    // budget: it must finish the queue however much work that takes.
+    const settle = limit >= this.chunks.length;
+    if (settle) { limit = Infinity; vertBudget = Infinity; }
+
     const cam = this.camera.position;
-    this.queue.sort((a, b) => {
-      const da = (a.centerX - cam.x) ** 2 + (a.centerZ - cam.z) ** 2;
-      const db = (b.centerX - cam.x) ** 2 + (b.centerZ - cam.z) ** 2;
-      return da - db;
-    });
-    let n = 0;
-    while (this.queue.length && n < limit) {
-      const c = this.queue.shift();
-      this._applyChunk(c, c.wantLod);
-      n++;
+    if (this.queue.length > 1) {
+      this.queue.sort((a, b) => {
+        const da = (a.centerX - cam.x) ** 2 + (a.centerZ - cam.z) ** 2;
+        const db = (b.centerX - cam.x) ** 2 + (b.centerZ - cam.z) ** 2;
+        return da - db;
+      });
     }
-    return n;
+
+    let done = 0, budget = vertBudget;
+    while (budget > 0 && done < limit) {
+      if (!this.job) {
+        if (this.queue.length === 0) break;
+        const c = this.queue.shift();
+        this.job = this._startChunkJob(c, c.wantLod);
+      }
+      const job = this.job;
+      budget -= this._stepChunkJob(job, settle ? job.total : budget);
+      if (job.row >= job.vpr) {
+        this._applyChunk(job.c, job.lod, this._finishChunkJob(job));
+        this.job = null;
+        done++;
+      }
+    }
+    this.stats.queued = this.queue.length + (this.job ? 1 : 0);
+    return done;
   }
 
   update() {

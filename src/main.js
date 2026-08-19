@@ -137,6 +137,7 @@ async function boot() {
     bots_squad: () => null,
     storm_edge: () => null,
     hud_full: () => null,
+    perf_battle: () => null,
     screen_result: () => null,
     match_loot: () => null,
     terrain_coast: () => {
@@ -491,6 +492,98 @@ async function boot() {
         victory: true, placement: 1, players: 25, eliminations: 7,
         damage: 1842, accuracy: 0.412, chests: 6, distance: 2143, time: 512,
       });
+      return true;
+    }
+
+    /*
+     * Performance scenario: a live worst-case firefight, not a capture.
+     *
+     * A bare boot sits behind the start screen on an empty overlook, which is
+     * the cheapest frame the game ever draws — gating on it would prove
+     * nothing. This stages everything that costs frame time simultaneously:
+     * a POI in the frustum, the whole bot field alive and fighting inside
+     * sight range, the storm wall closing, loot on the ground, a player fort
+     * and the live HUD/minimap. The engine is left running so the harness can
+     * hold the fire button and sample real frames.
+     */
+    if (name === 'perf_battle') {
+      const t = engine.services.get('terrain');
+      const player = engine.services.get('player');
+      const bld = engine.services.get('build');
+      const combat = engine.services.get('combat');
+      const st = engine.services.get('storm');
+      const botMgr = engine.services.get('bots');
+      const match = engine.services.get('match');
+      const structures = engine.services.get('structures');
+      const rig = engine.services.get('cameraRig');
+      const r = makeRoot(opts.seed).stream('scenario');
+      const poi = structures.pois.find((p) => p.type === 'town') || structures.pois[0];
+      const bearing = 2.35;
+      const px = poi.x + Math.cos(bearing) * (poi.radius + 10);
+      const pz = poi.z + Math.sin(bearing) * (poi.radius + 10);
+
+      // Full match state: loot populated, bots armed, storm timeline reset.
+      match.startMatch();
+      match._beginPlaying();
+      player.spawnAt(px, pz, 0);
+      player.yaw = Math.atan2(-(poi.x - px), -(poi.z - pz));
+      player.pitch = -0.03;
+      player.health = 100; player.shield = 100;
+
+      // Pull the whole bot field into a ring around the player. Scattered
+      // across the island they would be culled and idle; here every one of
+      // them is perceiving, steering, shooting and drawing.
+      for (let i = 0; i < botMgr.bots.length; i++) {
+        const b = botMgr.bots[i];
+        const a = player.yaw + (i / botMgr.bots.length - 0.5) * 2.2 + r.range(-0.1, 0.1);
+        const rad = 14 + (i % 6) * 13 + r.range(0, 6);
+        const g = t.findGround(px - Math.sin(a) * rad, pz - Math.cos(a) * rad, r);
+        b.position.set(g.x, g.y, g.z);
+        b.velocity.set(0, 0, 0);
+        b.alive = true;
+        b.health = b.maxHealth;
+      }
+      botMgr.aliveCount = botMgr.bots.length;
+
+      // Storm wall just inside the draw distance and still shrinking, so the
+      // wall geometry, its particles and the safe-circle logic are all live.
+      st.centre.set(px, pz);
+      st.radius = 150;
+      st.targetRadius = 90;
+
+      // A fort around the player: sweep the aim through a full turn placing
+      // walls, then ramps and floors, which is roughly what a player throws
+      // up in a fight.
+      bld.resources = { wood: 999, brick: 999, metal: 999 };
+      bld.active = true;
+      const yaw0 = player.yaw, pitch0 = player.pitch;
+      for (let piece = 0; piece < 3; piece++) {
+        bld.setPiece(piece);
+        bld.setMaterial(['wood', 'brick', 'metal'][piece]);
+        for (let k = 0; k < 12; k++) {
+          player.yaw = yaw0 + (k / 12) * Math.PI * 2;
+          player.pitch = piece === 2 ? -0.5 : -0.05;
+          bld.computeTarget();
+          bld.place();
+        }
+      }
+      for (const rec of bld.pending) rec.meta.hp = rec.meta.maxHp;
+      bld.pending.length = 0;
+      bld.active = false;
+      player.yaw = yaw0; player.pitch = pitch0;
+
+      // An automatic weapon with enough reserve to fire for the whole sample.
+      combat.slots[1] = makeWeaponFor('ar', 'legendary');
+      combat.selectSlot(1);
+      combat.reserveAmmo.medium = 9999;
+
+      rig.enabled = true;
+      rig.occlusion = 1;
+      for (let i = 0; i < 60; i++) rig.update(1 / 60);
+      t.updateLods(true); t.flushQueue(t.chunks.length); t.updateLods(false);
+      engine.services.get('vegetation').repack(true);
+      engine.services.get('vegetation').repackGrass(true);
+      engine.services.get('sky').update();
       return true;
     }
 

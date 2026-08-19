@@ -37,6 +37,11 @@ export function installTestApi(engine, ctx) {
 
     resetMetrics() { engine.profiler.reset(); },
 
+    /** Turn on per-system attribution; read it back via `systemMetrics()`. */
+    profileSystems(on = true) { engine.profileSystems = !!on; return engine.profileSystems; },
+
+    systemMetrics(limit = 12) { return engine.profiler.systemSummary(limit); },
+
     metrics() {
       const s = engine.profiler.summary();
       return {
@@ -44,10 +49,18 @@ export function installTestApi(engine, ctx) {
         fps: s.frameMs.p50 > 0 ? 1000 / s.frameMs.p50 : 0,
         pixelRatio: engine.renderer.pixelRatio,
         scaleIndex: engine.renderer.scaleIndex,
+        rasterScale: engine.renderer.rasterScale,
         size: { w: engine.renderer.width, h: engine.renderer.height },
         frame: engine.frame,
       };
     },
+
+    /**
+     * Shrink the drawing buffer without changing layout, DPR or the scene.
+     * Only fragment cost moves, so CPU percentiles and the draw-call/triangle
+     * counts stay exactly what a real device would see.
+     */
+    setRasterScale(s) { return engine.renderer.setRasterScale(s); },
 
     setCamera(pose) {
       const c = engine.camera;

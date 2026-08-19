@@ -246,6 +246,76 @@ const SUITE = `async () => {
     return { ok: worst <= 30, detail: 'max frustum-visible chunks ' + worst };
   });
 
+  t('terrain: a rebuild is amortised across frames, never done in one', () => {
+    const cam = G.engine.camera;
+    // Park somewhere settled, then jump far enough that the near ring is all
+    // new work, which is the sprint-across-a-boundary case.
+    cam.position.set(0, terrain.heightAt(0, 0) + 20, 0);
+    cam.updateMatrixWorld(true);
+    terrain.updateLods(true); terrain.flushQueue(terrain.chunks.length);
+    cam.position.set(260, terrain.heightAt(260, 240) + 20, 240);
+    cam.updateMatrixWorld(true);
+    terrain.updateLods(true);
+    const queued = terrain.queue.length;
+    if (queued < 2) return { ok: false, detail: 'expected a rebuild queue, got ' + queued };
+    // A single frame-budget flush must leave work outstanding rather than
+    // meshing the whole near ring at once.
+    const done = terrain.flushQueue();
+    const left = terrain.queue.length + (terrain.job ? 1 : 0);
+    return {
+      ok: done <= 2 && left > 0,
+      detail: 'queued ' + queued + ', completed ' + done + ' in one frame, ' + left + ' outstanding',
+    };
+  });
+
+  t('terrain: streaming always finishes what it starts', () => {
+    // Whatever the budget, repeated frame-sized flushes must drain the queue:
+    // a stalled job would leave a chunk stuck at the wrong LOD forever.
+    let frames = 0;
+    while ((terrain.queue.length || terrain.job) && frames < 400) { terrain.flushQueue(); frames++; }
+    const stuck = terrain.chunks.filter((c) => c.queued).length;
+    return {
+      ok: !terrain.job && terrain.queue.length === 0 && stuck === 0 && frames < 400,
+      detail: 'drained in ' + frames + ' frames, ' + stuck + ' chunks still marked queued',
+    };
+  });
+
+  t('terrain: an in-flight chunk keeps its old mesh until the new one is ready', () => {
+    const cam = G.engine.camera;
+    cam.position.set(-300, terrain.heightAt(-300, -300) + 20, -300);
+    cam.updateMatrixWorld(true);
+    terrain.updateLods(true); terrain.flushQueue(terrain.chunks.length);
+    cam.position.set(120, terrain.heightAt(120, 120) + 20, 120);
+    cam.updateMatrixWorld(true);
+    terrain.updateLods(true);
+    terrain.flushQueue(1, 60);              // deliberately too small to finish
+    const job = terrain.job;
+    if (!job) return { ok: false, detail: 'expected an in-flight job' };
+    const lodUnchanged = job.c.lod !== job.lod;
+    const hasMesh = !!job.c.mesh && job.c.mesh.geometry.attributes.position.count > 0;
+    terrain.flushQueue(terrain.chunks.length);
+    return {
+      ok: lodUnchanged && hasMesh,
+      detail: 'partially meshed chunk still rendering its previous LOD',
+    };
+  });
+
+  t('terrain: chunks behind the camera are culled from the draw list', () => {
+    const cam = G.engine.camera;
+    const x = 0, z = 0;
+    cam.position.set(x, terrain.heightAt(x, z) + 25, z);
+    cam.lookAt(x + 100, terrain.heightAt(x + 100, z) + 10, z);
+    cam.updateMatrixWorld(true);
+    terrain.updateLods(false);
+    const facing = terrain.stats.visible;
+    const drawn = terrain.chunks.filter((c) => c.mesh && c.mesh.visible).length;
+    const total = terrain.chunks.length;
+    return {
+      ok: facing > 0 && drawn === facing && facing < total * 0.5,
+      detail: facing + ' of ' + total + ' chunks in frustum, ' + drawn + ' meshes visible',
+    };
+  });
+
   t('vegetation: instance counts never exceed allocated capacity', () => {
     const cam = G.engine.camera;
     const over = [];

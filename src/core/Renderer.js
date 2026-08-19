@@ -31,6 +31,12 @@ export class Renderer {
     this.three.info.autoReset = false;
 
     this.scaleIndex = 0;
+    // Raster-only multiplier on top of the ladder. The CSS size and the
+    // reported DPR are unchanged; only the number of fragments shaded moves.
+    // The headless perf suite uses it to stop software rasterisation from
+    // being the bottleneck, since fragment cost is the one part of the frame
+    // SwiftShader gets wildly wrong and a phone GPU handles easily.
+    this.rasterScale = 1;
     this.adaptive = settings.user.adaptiveResolution;
     this._slowWindows = 0;
     this._fastWindows = 0;
@@ -46,7 +52,15 @@ export class Renderer {
     return Math.min(dpr, this.settings.q.maxPixelRatio);
   }
 
-  get pixelRatio() { return this.basePixelRatio * SCALE_LADDER[this.scaleIndex]; }
+  get pixelRatio() { return this.basePixelRatio * SCALE_LADDER[this.scaleIndex] * this.rasterScale; }
+
+  /** Test hook: scale the drawing buffer without touching layout or the ladder. */
+  setRasterScale(s) {
+    this.rasterScale = Math.max(0.05, Math.min(1, s || 1));
+    this.three.setPixelRatio(this.pixelRatio);
+    this.three.setSize(this.width, this.height, false);
+    return this.rasterScale;
+  }
 
   resize() {
     const w = Math.max(1, Math.floor(this.canvas.clientWidth || window.innerWidth));

@@ -24,10 +24,20 @@ export class Profiler {
     // submission. This is the device-portable CPU figure the gates use, since
     // the verification container rasterises in software.
     this.logicMs = new Float32Array(capacity);
+    // Per-frame update/lateUpdate cost, and the cost of a *single* fixed step.
+    // Splitting these matters: a frame runs one update but as many fixed steps
+    // as the elapsed time demands, so a per-frame sim figure measures the host
+    // machine's frame rate as much as the simulation. Only the per-step figure
+    // transfers to a device that actually hits its frame rate.
+    this.updateMs = new Float32Array(capacity);
+    this.simStepMs = new Float32Array(capacity);
     this.count = 0;
     this.head = 0;
     this._spans = new Map();
     this._stack = [];
+    // Per-system attribution, opt-in: the perf pass needs to know which system
+    // owns a spike, and a p99 over the whole frame never says that.
+    this.systemMs = new Map();
     this._t0 = 0;
     this.drawCalls = 0;
     this.triangles = 0;
@@ -59,13 +69,15 @@ export class Profiler {
   span(label) { const s = this._spans.get(label); return s ? s.last : 0; }
 
   /** Record one frame. `cpu` excludes the browser's own present/idle time. */
-  endFrame(frameMs, cpu, sim, render, rendererInfo) {
+  endFrame(frameMs, cpu, sim, render, rendererInfo, simSteps = 1) {
     const i = this.head;
     this.frameMs[i] = frameMs;
     this.cpuMs[i] = cpu;
     this.simMs[i] = sim;
     this.renderMs[i] = render;
     this.logicMs[i] = Math.max(0, cpu - render);
+    this.updateMs[i] = Math.max(0, cpu - render - sim);
+    this.simStepMs[i] = simSteps > 0 ? sim / simSteps : 0;
     this.head = (i + 1) % this.capacity;
     if (this.count < this.capacity) this.count++;
     if (rendererInfo) {
@@ -75,7 +87,28 @@ export class Profiler {
     }
   }
 
-  reset() { this.count = 0; this.head = 0; for (const s of this._spans.values()) { s.ms = 0; } }
+  /** Attribute `ms` to one system's phase. Called only while profiling is on. */
+  addSystem(name, phase, ms) {
+    const key = `${name}.${phase}`;
+    let e = this.systemMs.get(key);
+    if (!e) { e = { ms: 0, max: 0, calls: 0 }; this.systemMs.set(key, e); }
+    e.ms += ms; e.calls++;
+    if (ms > e.max) e.max = ms;
+  }
+
+  /** Systems sorted by total cost, heaviest first. */
+  systemSummary(limit = 12) {
+    const out = [];
+    for (const [key, e] of this.systemMs) out.push({ key, ms: e.ms, max: e.max, calls: e.calls });
+    out.sort((a, b) => b.ms - a.ms);
+    return out.slice(0, limit);
+  }
+
+  reset() {
+    this.count = 0; this.head = 0;
+    for (const s of this._spans.values()) { s.ms = 0; }
+    this.systemMs.clear();
+  }
 
   summary() {
     // The ring buffer is unordered but percentiles do not care about order.
@@ -86,6 +119,8 @@ export class Profiler {
       simMs: percentiles(Array.from(this.simMs), n),
       renderMs: percentiles(Array.from(this.renderMs), n),
       logicMs: percentiles(Array.from(this.logicMs), n),
+      updateMs: percentiles(Array.from(this.updateMs), n),
+      simStepMs: percentiles(Array.from(this.simStepMs), n),
       drawCalls: this.drawCalls,
       triangles: this.triangles,
       programs: this.programs,

@@ -44,6 +44,9 @@ export class Engine {
     // `frozen` keeps the rAF loop alive (so the compositor still commits frames
     // for screenshots) while suppressing all simulation and animation advance.
     this.frozen = false;
+    // Opt-in per-system timing. Off by default: it costs a clock read per
+    // system per step, which is noise the shipping loop does not need.
+    this.profileSystems = false;
 
     this.services.set('engine', this);
     this.services.set('bus', this.bus);
@@ -132,20 +135,43 @@ export class Engine {
       let steps = 0;
       const tSim = p.now();
       while (this._acc >= FIXED_DT && steps < MAX_STEPS) {
-        for (let i = 0; i < this._fixed.length; i++) this._fixed[i].fixedUpdate(FIXED_DT);
+        if (this.profileSystems) {
+          for (let i = 0; i < this._fixed.length; i++) {
+            const t = p.now();
+            this._fixed[i].fixedUpdate(FIXED_DT);
+            p.addSystem(this._fixed[i].name, 'fixed', p.now() - t);
+          }
+        } else {
+          for (let i = 0; i < this._fixed.length; i++) this._fixed[i].fixedUpdate(FIXED_DT);
+        }
         this._acc -= FIXED_DT;
         this.time += FIXED_DT;
         steps++;
       }
       if (steps === MAX_STEPS) this._acc = 0; // give up on the backlog rather than stall
       this._simMs = p.now() - tSim;
+      this._simSteps = steps;
     } else {
       this._simMs = 0;
+      this._simSteps = 0;
     }
 
     const alpha = this._acc / FIXED_DT;
-    for (let i = 0; i < this._update.length; i++) this._update[i].update(dt, alpha);
-    for (let i = 0; i < this._late.length; i++) this._late[i].lateUpdate(dt, alpha);
+    if (this.profileSystems) {
+      for (let i = 0; i < this._update.length; i++) {
+        const t = p.now();
+        this._update[i].update(dt, alpha);
+        p.addSystem(this._update[i].name, 'update', p.now() - t);
+      }
+      for (let i = 0; i < this._late.length; i++) {
+        const t = p.now();
+        this._late[i].lateUpdate(dt, alpha);
+        p.addSystem(this._late[i].name, 'late', p.now() - t);
+      }
+    } else {
+      for (let i = 0; i < this._update.length; i++) this._update[i].update(dt, alpha);
+      for (let i = 0; i < this._late.length; i++) this._late[i].lateUpdate(dt, alpha);
+    }
 
     let renderMs = 0;
     if (render) {
@@ -157,7 +183,7 @@ export class Engine {
     this.bus.flush();
 
     const cpuMs = p.now() - tFrameStart;
-    p.endFrame(wallMs, cpuMs, this._simMs, renderMs, this.renderer.three.info);
+    p.endFrame(wallMs, cpuMs, this._simMs, renderMs, this.renderer.three.info, this._simSteps);
     if (!this.deterministic) this.renderer.sampleFrame(wallMs);
     this.frame++;
   }
