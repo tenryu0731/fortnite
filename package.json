@@ -1,0 +1,36 @@
+{
+  "name": "stormfall",
+  "version": "0.1.0",
+  "description": "Mobile-browser battle royale TPS with building \u2014 Three.js, fully procedural assets",
+  "main": "index.js",
+  "scripts": {
+    "dev": "npx http-server -p 8080 -c-1 .",
+    "test": "node tests/run-all.cjs",
+    "test:self": "node tests/selftest.cjs",
+    "test:unit": "node tests/unit.cjs",
+    "test:visual": "node tests/screenshots.cjs",
+    "test:visual:update": "node tests/screenshots.cjs --update",
+    "test:touch": "node tests/touch.cjs",
+    "test:perf": "node tests/perf.cjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tenryu0731/fortnite.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/tenryu0731/fortnite/issues"
+  },
+  "homepage": "https://github.com/tenryu0731/fortnite#readme",
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "pixelmatch": "^5.3.0",
+    "playwright": "^1.56.1",
+    "pngjs": "^7.0.0"
+  },
+  "private": true
+}
