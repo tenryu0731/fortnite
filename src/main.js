@@ -15,6 +15,7 @@ import { DesktopInput } from './input/DesktopInput.js';
 import { TouchInput } from './input/TouchInput.js';
 import { PlayerController } from './player/PlayerController.js';
 import { CameraRig } from './player/CameraRig.js';
+import { AimAssist } from './player/AimAssist.js';
 import { BuildSystem } from './build/BuildSystem.js';
 import { CombatSystem } from './combat/CombatSystem.js';
 import { FxSystem } from './fx/FxSystem.js';
@@ -24,6 +25,7 @@ import { Loot } from './game/Loot.js';
 import { MatchDirector } from './game/MatchDirector.js';
 import { Hud } from './ui/Hud.js';
 import { Minimap } from './ui/Minimap.js';
+import { Awareness } from './ui/Awareness.js';
 import { DamageNumbers } from './ui/DamageNumbers.js';
 import { Screens } from './ui/Screens.js';
 import { AudioSystem } from './audio/AudioSystem.js';
@@ -77,6 +79,7 @@ async function boot() {
   engine.services.set('touch', touch);
   engine.register('input', input);
   engine.register('player', new PlayerController({ seed: opts.seed }));
+  engine.register('aimAssist', new AimAssist());
   engine.register('build', new BuildSystem());
   engine.register('audio', new AudioSystem());
   engine.register('combat', new CombatSystem(opts.seed));
@@ -87,6 +90,7 @@ async function boot() {
   engine.register('match', new MatchDirector(opts.seed));
   engine.register('hud', new Hud());
   engine.register('minimap', new Minimap());
+  engine.register('awareness', new Awareness());
   engine.register('damageNumbers', new DamageNumbers());
   engine.register('screens', new Screens());
   engine.register('cameraRig', new CameraRig());
@@ -456,9 +460,9 @@ async function boot() {
 
       // Populate the kill feed and a hitmarker.
       hud.killfeed = [
-        { text: 'YOU eliminated Bot 14', ttl: 4, mine: true },
-        { text: 'Bot 3 eliminated Bot 21', ttl: 3.2, mine: false },
-        { text: 'the storm eliminated Bot 9', ttl: 2.4, mine: false },
+        { text: 'YOU eliminated NovaFox27', ttl: 4, mine: true },
+        { text: 'CrimsonOtter eliminated Lil_Waffle', ttl: 3.2, mine: false },
+        { text: 'the storm eliminated xRogueMothx', ttl: 2.4, mine: false },
       ];
       hud._feedDirty = true;
       hud._hitmarkerTimer = 0.2;
@@ -714,6 +718,7 @@ async function boot() {
         engine.services.get('touch').setVisible(v);
         engine.services.get('hud').setVisible(v);
         engine.services.get('minimap').setVisible(v);
+        engine.services.get('awareness').setVisible(v);
       },
       showScreen: (name) => engine.services.get('screens').show(name),
       setYaw: (y) => { engine.services.get('player').yaw = y; },

@@ -101,6 +101,8 @@ export class Screens {
     };
     addToggle('invertY', 'Y 軸反転 / Invert Y');
     addToggle('leftHanded', '左利き / Left-handed');
+    addToggle('aimAssist', 'エイムアシスト / Aim assist');
+    addToggle('soundViz', '音の可視化 / Sound visualisation');
     addToggle('haptics', '振動 / Haptics');
     addToggle('adaptiveResolution', '解像度自動調整');
 
@@ -208,6 +210,8 @@ export class Screens {
     if (this.touch) this.touch.setVisible(!which);
     if (this.hud) this.hud.setVisible(!which);
     if (this.minimap) this.minimap.setVisible(!which);
+    const aw = this.services && this.services.peek('awareness');
+    if (aw) aw.setVisible(!which);
   }
 
   showResult(r) {

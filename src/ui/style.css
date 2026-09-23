@@ -605,15 +605,20 @@ body.portrait-gate .touch-layer { visibility: hidden; }
 
 /* --- weapon --------------------------------------------------------------- */
 
-/* Directly above the quickbar rather than in the bottom-right corner: the
-   right side of a landscape phone belongs entirely to the thumb cluster. */
+/* Beside the quickbar, between it and the right thumb cluster. It used to sit
+   centred above the quickbar, which is exactly where the over-the-shoulder
+   camera puts the character's legs, so the ammo count was printed over the
+   player's own trousers. A dark pill keeps it legible over any background. */
 .hud-weapon {
   position: absolute;
-  left: 42%;
+  left: 65%;
   transform: translateX(-50%);
-  bottom: calc(var(--pad-b) + 10vmin);
+  bottom: calc(var(--pad-b) + 1.5vmin);
   text-align: center;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+  background: rgba(10, 16, 28, 0.42);
+  border-radius: 1.4vmin;
+  padding: 0.6vmin 1.8vmin 0.8vmin;
 }
 .hud-weapon-name { font-size: 2.1vmin; letter-spacing: 0.08em; color: var(--hud-dim); }
 .hud-weapon-name[data-rarity="uncommon"] { color: #58c94b; }
@@ -816,3 +821,61 @@ body.portrait-gate .touch-layer { visibility: hidden; }
 }
 .result-row span { color: var(--hud-dim); letter-spacing: 0.12em; }
 .result-row b { font-variant-numeric: tabular-nums; }
+
+/* --- awareness: damage direction and sound visualisation ------------------ */
+/* Both are rings centred on the crosshair; each cue is a full-size box rotated
+   to its bearing, with the visible mark drawn at the top of the box. */
+.awareness { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+.awareness.hidden { display: none; }
+.aw-damage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44vmin;
+  height: 44vmin;
+  border-radius: 50%;
+  border: 1.2vmin solid transparent;
+  border-top-color: rgba(255, 56, 72, 0.95);
+  filter: drop-shadow(0 0 6px rgba(255, 40, 60, 0.75));
+  /* Taper the arc's ends so it reads as a pointer rather than a quarter ring. */
+  -webkit-mask: conic-gradient(from -45deg, transparent 0deg, #000 30deg, #000 60deg, transparent 90deg, transparent 360deg);
+  mask: conic-gradient(from -45deg, transparent 0deg, #000 30deg, #000 60deg, transparent 90deg, transparent 360deg);
+  opacity: 0;
+  transform: translate(-50%, -50%);
+}
+.aw-sound {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 34vmin;
+  height: 34vmin;
+  opacity: 0;
+  transform: translate(-50%, -50%);
+}
+.aw-sound i {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 3.4vmin;
+  height: 3.4vmin;
+  margin-left: -1.7vmin;
+}
+/* Gunfire: a bright burst. */
+.aw-sound[data-kind="gun"] i {
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff6d8 0 28%, #ffb23a 42%, rgba(255, 140, 40, 0) 72%);
+  box-shadow: 0 0 10px rgba(255, 170, 60, 0.9);
+}
+/* Footsteps: a pair of prints. */
+.aw-sound[data-kind="step"] i::before,
+.aw-sound[data-kind="step"] i::after {
+  content: '';
+  position: absolute;
+  width: 1.1vmin;
+  height: 1.8vmin;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.7);
+}
+.aw-sound[data-kind="step"] i::before { left: 0.4vmin; top: 1.2vmin; }
+.aw-sound[data-kind="step"] i::after { left: 1.8vmin; top: 0.2vmin; }

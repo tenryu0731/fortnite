@@ -2153,9 +2153,20 @@ const SUITE = `async () => {
     reviveAll();
     const lootSys = G.engine.services.get('loot');
     const b = bots.bots[4];
-    b.state = 1; b.target = null;
+    b.state = 1; b.target = null; b.heardAt = null; b.heardTimer = 0;
     b.weapon = makeWeapon('pistol', 'common');
-    const item = lootSys.spawnWeapon(b.position.x + 6, b.position.y + 0.5, b.position.z, 'ar', 'epic');
+    // Stage on ground known to be clear, so the walk cannot be blocked by
+    // whatever tree the bot happened to be standing beside.
+    clearBuilds();
+    placeClear();
+    const sx = player.position.x, sz = player.position.z;
+    b.position.set(sx, terrain.heightAt(sx, sz), sz);
+    b.velocity.set(0, 0, 0);
+    player.spawnAt(sx + 40, sz + 40, 0);
+    // placeClear runs the simulation, during which the bot may have spotted the
+    // player; reset its mind after staging, not before.
+    b.state = 1; b.target = null; b.lootGoal = null; b.heardAt = null; b.heardTimer = 0;
+    const item = lootSys.spawnWeapon(sx, b.position.y + 0.5, sz - 2.5, 'ar', 'epic');
     bots._scanLoot(b);
     const goal = b.lootGoal === item;
     // Walk it there with the real steering and step logic. Nobody else may be
@@ -2201,6 +2212,155 @@ const SUITE = `async () => {
       detail: onBus + ' on the bus, ' + drawnOnBus + ' drawn, hittable=' + !!shootable + '; after 40s '
         + stillOnBus + ' still aboard, ' + landed.length + ' standing, closest pair ' + minGap.toFixed(1) + 'm apart',
     };
+  });
+
+  // Aim assist fixtures: one bot stood on clear ground in front of the player,
+  // with the camera settled so the reticle sits a chosen angle off its chest.
+  const assist = G.engine.services.get('aimAssist');
+  const aimAt = (offsetYaw = 0, dist = 22) => {
+    // The target has to hold still: a bot left to its own devices walks off or
+    // starts a fight while the camera is settling.
+    bots.paused = true;
+    reviveAll();
+    for (const o of bots.bots) o.alive = false;
+    const b = bots.bots[5];
+    b.alive = true; b.inBus = false; b.state = 1; b.target = null; b.health = 1e6;
+    clearBuilds();
+    placeClear();
+    combat.slots = [makeWeapon('pickaxe'), makeWeapon('ar', 'rare'), null, null, null];
+    combat.activeSlot = 1; combat._syncHeld();
+    player.yaw = 0; player.pitch = 0;
+    const bx = player.position.x, bz = player.position.z - dist;
+    b.position.set(bx, terrain.heightAt(bx, bz), bz);
+    b.velocity.set(0, 0, 0);
+    // Converge the camera onto the chest, then turn off by the requested angle.
+    const cam = G.engine.camera, cp = new THREE.Vector3();
+    for (let k = 0; k < 4; k++) {
+      sim(20, {});
+      cam.getWorldPosition(cp);
+      const to = new THREE.Vector3(b.position.x, b.position.y + 1.25, b.position.z).sub(cp);
+      player.yaw += Math.atan2(-to.x, -to.z) - Math.atan2(-cam.getWorldDirection(new THREE.Vector3()).x, -cam.getWorldDirection(new THREE.Vector3()).z);
+      player.pitch += Math.asin(to.y / to.length()) - Math.asin(cam.getWorldDirection(new THREE.Vector3()).y);
+    }
+    player.yaw += offsetYaw;
+    sim(20, {});
+    return b;
+  };
+  const reticleOff = (b) => {
+    const cam = G.engine.camera, cp = new THREE.Vector3();
+    cam.getWorldPosition(cp);
+    const to = new THREE.Vector3(b.position.x, b.position.y + 1.25, b.position.z).sub(cp).normalize();
+    return Math.acos(Math.min(1, to.dot(cam.getWorldDirection(new THREE.Vector3()))));
+  };
+
+  t('aim assist: the reticle slows down over an enemy (friction)', () => {
+    aimAt(0);
+    const y0 = player.yaw;
+    sim(1, { look: { dx: 0.01, dy: 0 } });
+    const onTarget = Math.abs(player.yaw - y0);
+    aimAt(0.6);                                 // well away from the bot
+    const y1 = player.yaw;
+    sim(1, { look: { dx: 0.01, dy: 0 } });
+    const offTarget = Math.abs(player.yaw - y1);
+    bots.paused = false;
+    reviveAll();
+    return { ok: onTarget < offTarget * 0.75 && offTarget > 0.009,
+             detail: 'turn per step ' + onTarget.toFixed(4) + ' on target vs ' + offTarget.toFixed(4) + ' off'
+               + ' [weapon ' + (combat.weapon && combat.weapon.id) + ', alive ' + player.alive + ', build ' + build.active
+               + ', snaps ' + assist.stats.snaps + ', friction steps ' + assist.stats.frictionSteps + ']' };
+  });
+
+  t('aim assist: entering ADS near an enemy settles aim onto them', () => {
+    const b = aimAt(0.08);                      // ~4.6 degrees off
+    const before = reticleOff(b);
+    sim(1, { aim: true });
+    sim(14, { aim: true });
+    const after = reticleOff(b);
+    sim(4, {});
+    bots.paused = false;
+    reviveAll();
+    return { ok: before > 0.05 && after < 0.02,
+             detail: 'reticle ' + (before * 57.3).toFixed(1) + ' deg off -> ' + (after * 57.3).toFixed(2) + ' deg after ADS' };
+  });
+
+  t('aim assist: never helps through a wall', () => {
+    const b = aimAt(0.03);
+    // A wall between the player and the bot.
+    const mid = player.position.clone().lerp(b.position, 0.5);
+    const kit = structures.kit;
+    const rid = kit.place('wall', mid.x, terrain.heightAt(mid.x, mid.z), mid.z, 0, { key: 'wood', tint: 0x8a6a44, hp: 999 });
+    const snaps0 = assist.stats.snaps, fr0 = assist.stats.frictionSteps;
+    sim(15, { aim: true, look: { dx: 0.002, dy: 0 } });
+    const snapped = assist.stats.snaps - snaps0, frictioned = assist.stats.frictionSteps - fr0;
+    kit.destroy(rid);
+    sim(4, {});
+    bots.paused = false;
+    reviveAll();
+    return { ok: snapped === 0 && frictioned === 0,
+             detail: 'with a wall in the way: ' + snapped + ' snaps, ' + frictioned + ' friction steps' };
+  });
+
+  t('aim assist: can be switched off', () => {
+    const settings = G.engine.services.get('settings');
+    settings.user.aimAssist = false;
+    aimAt(0.03);
+    const snaps0 = assist.stats.snaps, fr0 = assist.stats.frictionSteps;
+    sim(15, { aim: true, look: { dx: 0.002, dy: 0 } });
+    const snapped = assist.stats.snaps - snaps0, frictioned = assist.stats.frictionSteps - fr0;
+    settings.user.aimAssist = true;
+    sim(4, {});
+    bots.paused = false;
+    reviveAll();
+    return { ok: snapped === 0 && frictioned === 0,
+             detail: 'switched off: ' + snapped + ' snaps, ' + frictioned + ' friction steps' };
+  });
+
+  t('awareness: getting shot shows an arc pointing at the shooter', () => {
+    const aw = G.engine.services.get('awareness');
+    for (const d of aw.damage) d.ttl = 0;
+    reviveAll();
+    const b = bots.bots[6];
+    // Put the shooter hard to the camera's right.
+    const cam = G.engine.camera;
+    const fwd = cam.getWorldDirection(new THREE.Vector3()).setY(0).normalize();
+    const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
+    b.position.copy(player.position).addScaledVector(right, 15);
+    G.engine.bus.emit('player:damaged', { amount: 20, source: { type: 'weapon', shooter: b }, health: 80, shield: 0 });
+    aw.update(1 / 60);
+    const snap = aw.snapshot();
+    player.health = 100;
+    const rot = snap.damage.length ? snap.damage[0].rot : null;
+    return { ok: rot !== null && Math.abs(rot - 90) < 15,
+             detail: 'indicator at ' + rot + ' deg (90 = right)' };
+  });
+
+  t('awareness: gunfire behind the player shows on the sound ring', () => {
+    const aw = G.engine.services.get('awareness');
+    for (const snd of aw.sounds) snd.ttl = 0;
+    const cam = G.engine.camera;
+    const fwd = cam.getWorldDirection(new THREE.Vector3()).setY(0).normalize();
+    const origin = player.position.clone().addScaledVector(fwd, -30).setY(player.position.y + 1.5);
+    G.engine.bus.emit('weapon:fired', { shooter: bots.bots[7], weapon: 'ar', origin, dir: fwd.clone() });
+    aw.update(1 / 60);
+    const gun = aw.snapshot().sounds.find((x) => x.kind === 'gun');
+    const rot = gun ? ((gun.rot % 360) + 360) % 360 : null;
+    // Muted players rely on this; it must also be possible to turn it off.
+    const settings = G.engine.services.get('settings');
+    settings.user.soundViz = false;
+    for (const snd of aw.sounds) snd.ttl = 0;
+    G.engine.bus.emit('weapon:fired', { shooter: bots.bots[7], weapon: 'ar', origin, dir: fwd.clone() });
+    aw.update(1 / 60);
+    const shownWhenOff = aw.snapshot().sounds.length;
+    settings.user.soundViz = true;
+    return { ok: rot !== null && Math.abs(rot - 180) < 15 && shownWhenOff === 0,
+             detail: 'gunfire icon at ' + rot + ' deg (180 = behind); with the option off: ' + shownWhenOff + ' icons' };
+  });
+
+  t('bots: every bot has a distinct player-style name', () => {
+    const names = bots.bots.map((b) => b.name);
+    const unique = new Set(names).size === names.length;
+    return { ok: unique && names.every((n) => typeof n === 'string' && n.length >= 5 && !/^Bot /.test(n)),
+             detail: names.slice(0, 5).join(', ') + ' ...' };
   });
 
   t('bots: the whole opposing team costs one draw call', () => {

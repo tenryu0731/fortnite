@@ -3,6 +3,7 @@ import { Rng } from '../gen/Rng.js';
 import { makeWeapon, RARITY_ORDER, WEAPONS as WEAPON_DEFS } from '../combat/Weapons.js';
 import { BotMeshPool } from './BotMesh.js';
 import { ITEM } from '../game/Loot.js';
+import { makeHandles } from '../gen/Names.js';
 import { CharacterMesh } from '../player/CharacterMesh.js';
 
 /**
@@ -172,8 +173,11 @@ export class BotManager {
     this.pool = new BotMeshPool(this.count);
     scene.add(this.pool.mesh);
 
+    // A separate stream, so naming never shifts the bots' other seeded traits.
+    const names = makeHandles(Rng.forStream(this.seed, 'bot-names'), this.count);
     for (let i = 0; i < this.count; i++) {
       const b = makeBot(i, this.rng);
+      b.name = names[i] || `Player${i + 1}`;
       b.body.pos = b.position;
       b.body.vel = b.velocity;
       b.applyDamage = (amount, src) => this.damageBot(b, amount, src);
@@ -722,6 +726,9 @@ export class BotManager {
   /* ------------------------------------------------------------------ */
 
   fixedUpdate(dt) {
+    // Staged scenes and tests hold the bots still while keeping them drawn and
+    // hittable.
+    if (this.paused) return;
     this.frame++;
     this.sinceSpawn = (this.sinceSpawn || 0) + dt;
     const group = this.frame % PERCEPTION_GROUPS;

@@ -184,13 +184,14 @@ export class Hud {
 
   _onEliminated(e) {
     const byPlayer = e.source && e.source.shooter === this.player;
-    const victim = e.isPlayer ? 'YOU' : `Bot ${e.entity ? e.entity.id : '?'}`;
-    const killer = byPlayer ? 'YOU' : (e.source && e.source.shooter && e.source.shooter.id !== undefined
-      ? `Bot ${e.source.shooter.id}` : (e.source && e.source.type === 'storm' ? 'the storm' : '—'));
+    const nameOf = (ent) => (ent && (ent.name || (ent.id !== undefined ? `Player${ent.id + 1}` : null))) || '?';
+    const victim = e.isPlayer ? 'YOU' : nameOf(e.entity);
+    const killer = byPlayer ? 'YOU' : (e.source && e.source.shooter
+      ? nameOf(e.source.shooter) : (e.source && e.source.type === 'storm' ? 'the storm' : '—'));
     this.killfeed.unshift({ text: `${killer} eliminated ${victim}`, ttl: KILLFEED_TTL, mine: byPlayer });
     if (this.killfeed.length > KILLFEED_MAX) this.killfeed.length = KILLFEED_MAX;
     this._feedDirty = true;
-    if (byPlayer) this._banner('ELIMINATED', 1.4, 'good');
+    if (byPlayer) this._banner(`ELIMINATED ${victim}`, 1.6, 'good');
   }
 
   _onMatchState(e) {

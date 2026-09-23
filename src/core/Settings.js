@@ -73,6 +73,8 @@ const USER_DEFAULTS = {
   leftHanded: false,
   autoSprint: true,
   botDifficulty: 'normal',
+  aimAssist: true,
+  soundViz: true,
 };
 
 const STORAGE_KEY = 'stormfall.settings.v1';
