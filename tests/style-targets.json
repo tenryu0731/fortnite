@@ -1,0 +1,37 @@
+{
+  "_about": "Colour statistics of reference gameplay frames of the genre this game imitates. The frames themselves are copyrighted and are not in the repository; these derived numbers are the art-direction target. Tolerances are deliberately wide: the goal is to read as the same genre, not to copy a frame.",
+  "_source": "Wikipedia (en) file Battling_in_fortnite.jpg, HUD regions excluded; measured by tests/stylemetrics.cjs",
+  "metrics": {
+    "L.mean": {
+      "target": 49.7,
+      "tol": 8
+    },
+    "L.p05": {
+      "target": 8.4,
+      "tol": 13
+    },
+    "colourfulness": {
+      "target": 69.5,
+      "tol": 12
+    },
+    "grass.L": {
+      "target": 52.2,
+      "tol": 10
+    },
+    "grass.hue": {
+      "target": 139.7,
+      "tol": 12
+    },
+    "sky.L": {
+      "target": 74.3,
+      "tol": 10
+    },
+    "sky.b": {
+      "target": -11.7,
+      "tol": 8
+    }
+  },
+  "frames": [
+    "player_tps"
+  ]
+}

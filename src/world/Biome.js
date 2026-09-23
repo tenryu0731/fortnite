@@ -26,11 +26,11 @@ export const BIOME_NAMES = ['ocean', 'beach', 'grass', 'forest', 'rock', 'snow',
 const COLORS = srgbAll([
   [0.16, 0.28, 0.36], // ocean floor
   [0.80, 0.73, 0.52], // beach sand
-  [0.28, 0.44, 0.17], // grassland
-  [0.19, 0.34, 0.15], // forest
+  [0.42, 0.61, 0.23], // grassland: lime, the genre's signature ground colour
+  [0.31, 0.51, 0.18], // forest
   [0.46, 0.44, 0.42], // exposed rock
   [0.92, 0.94, 0.97], // snow
-  [0.40, 0.31, 0.19], // dirt / path
+  [0.66, 0.56, 0.39], // dirt / path: warm packed earth, not mud
 ]);
 
 export const SEA_LEVEL = 3.0;

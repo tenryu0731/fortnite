@@ -148,69 +148,113 @@ function limb(r0, r1, len, radialSeg = 5) {
   return g;
 }
 
+/** Leaf palette shared by the near trees and their far proxies (sRGB hex). */
+export const TREE_LEAF = 0x5fae3c;
+export const TREE_LEAF_DARK = 0x2f6e2a;
+export const TREE_BARK = 0x7a5436;
+export const PINE_LEAF = 0x3f8c4a;
+export const PINE_BARK = 0x6a4a33;
+
 /**
- * Recursive tree: tapered trunk + branches, returned as two merged geometries
- * so bark and foliage can use different materials.
- * Vertex counts are deliberately low — trees are instanced by the thousand.
+ * Replace a canopy's normals with ones radiating from an ellipsoid centre.
+ *
+ * This is the standard trick behind stylised foliage: individual blobs shade
+ * as one soft volume, so a cluster of low-poly spheres reads as a single puffy
+ * crown lit from the sun side instead of a pile of faceted rocks.
+ */
+export function sphericalNormals(geo, cx, cy, cz, rx = 1, ry = 1, rz = 1) {
+  const pos = geo.getAttribute('position');
+  const nrm = new Float32Array(pos.count * 3);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    // Gradient of the ellipsoid field, which is the true surface normal of a
+    // stretched sphere rather than a naive radial direction.
+    v.set((pos.getX(i) - cx) / (rx * rx), (pos.getY(i) - cy) / (ry * ry), (pos.getZ(i) - cz) / (rz * rz));
+    if (v.lengthSq() < 1e-9) v.set(0, 1, 0);
+    v.normalize();
+    nrm[i * 3] = v.x; nrm[i * 3 + 1] = v.y; nrm[i * 3 + 2] = v.z;
+  }
+  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  return geo;
+}
+
+/**
+ * Stylised broadleaf tree: a short, slightly curved trunk that splits into a
+ * few thick limbs, under one broad, puffy crown built from overlapping blobs.
+ *
+ * The crown is shaded as a single volume (see sphericalNormals) and graded
+ * from a cool dark underside to a warm lime top, which is what makes the
+ * genre's trees read as soft and round rather than faceted.
+ *
+ * Returned as two merged geometries so bark and foliage can use different
+ * materials. Kept under 500 triangles: trees are instanced by the hundred.
  */
 export function tree(opts = {}) {
   const {
-    seed = 1, height = 9, trunkRadius = 0.34, depth = 2,
-    branches = 3, spread = 0.62, foliageSize = 2.4, radialSeg = 4,
-    barkColor = 0x6b4b32, leafColor = 0x4c8c3d,
+    seed = 1, height = 9, trunkRadius = 0.36, foliageSize = 2.4,
+    barkColor = TREE_BARK, leafColor = TREE_LEAF, leafDark = TREE_LEAF_DARK,
   } = opts;
   const rng = new Rng(seed);
   const woodParts = [];
-  const leafParts = [];
-  const leafGeoCache = new THREE.IcosahedronGeometry(1, 0);
 
-  const grow = (origin, dir, len, r, level) => {
-    const g = limb(r, r * 0.68, len, radialSeg);
+  // Trunk to the fork, then three limbs reaching into the crown.
+  const fork = height * 0.42;
+  const trunk = limb(trunkRadius, trunkRadius * 0.72, fork, 6);
+  woodParts.push(trunk);
+  const crownY = height * 0.72;
+  const crownR = foliageSize * 1.5;
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2 + rng.range(-0.3, 0.3);
+    const dir = new THREE.Vector3(Math.cos(a) * 0.55, 1, Math.sin(a) * 0.55).normalize();
+    const len = (crownY - fork) * 1.15;
+    const g = limb(trunkRadius * 0.62, trunkRadius * 0.28, len, 5);
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
-    xform(g, { pos: [origin.x, origin.y, origin.z], quat: q });
+    xform(g, { pos: [0, fork - 0.1, 0], quat: q });
     woodParts.push(g);
-    const tip = origin.clone().addScaledVector(dir, len);
-    if (level >= depth) {
-      const s = foliageSize * (0.62 + rng.next() * 0.5) * (1 - level * 0.1);
-      const lg = leafGeoCache.clone();
-      xform(lg, {
-        pos: [tip.x, tip.y, tip.z],
-        scale: [s, s * 0.82, s],
-        rot: [rng.range(0, 3.14), rng.range(0, 3.14), rng.range(0, 3.14)],
-      });
-      leafParts.push(lg);
-      return;
-    }
-    const n = branches + (level === 0 && rng.next() < 0.4 ? 1 : 0);
-    for (let i = 0; i < n; i++) {
-      const a = (i / n) * Math.PI * 2 + rng.range(-0.4, 0.4);
-      const tilt = spread * rng.range(0.7, 1.3);
-      const nd = new THREE.Vector3(Math.cos(a) * tilt, 1, Math.sin(a) * tilt).normalize();
-      nd.lerp(dir, 0.25).normalize();
-      grow(tip, nd, len * rng.range(0.6, 0.78), r * 0.62, level + 1);
-    }
-  };
+  }
 
-  grow(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 1, 0), height * 0.42, trunkRadius, 0);
-  leafGeoCache.dispose();
+  // Crown: a big central blob ringed by smaller ones, wider than tall.
+  const blobs = [];
+  const main = new THREE.IcosahedronGeometry(1, 1);
+  xform(main, { pos: [0, crownY + crownR * 0.1, 0], scale: [crownR, crownR * 0.78, crownR] });
+  blobs.push(main);
+  const ring = 4;
+  for (let i = 0; i < ring; i++) {
+    const a = (i / ring) * Math.PI * 2 + rng.range(-0.35, 0.35);
+    const r = crownR * rng.range(0.52, 0.66);
+    const d = crownR * rng.range(0.55, 0.72);
+    const g = new THREE.IcosahedronGeometry(1, 1);
+    xform(g, {
+      pos: [Math.cos(a) * d, crownY - crownR * rng.range(0.05, 0.25), Math.sin(a) * d],
+      scale: [r, r * 0.82, r],
+      rot: [0, rng.range(0, 3.14), 0],
+    });
+    blobs.push(g);
+  }
+  let leaves = merge(blobs);
+  const rx = crownR * 1.55, ry = crownR * 0.95;
+  sphericalNormals(leaves, 0, crownY - crownR * 0.1, 0, rx, ry, rx);
 
   const wood = merge(woodParts);
-  paint(wood, barkColor, 0.18, rng);
-  const leaves = merge(leafParts);
-  // Vertical gradient on foliage reads as ambient occlusion without a shader.
+  paint(wood, barkColor, 0.14, rng);
+
+  // Underside dark and cool, crown bright and warm: reads as ambient
+  // occlusion and sky light without a shader.
+  const lo = new THREE.Color(leafDark), hi = new THREE.Color(leafColor);
+  const top = crownY + crownR * 0.9, bottom = crownY - crownR * 0.8;
   paintBy(leaves, (x, y) => {
-    const t = THREE.MathUtils.clamp((y - height * 0.25) / (height * 0.8), 0, 1);
-    _c.set(leafColor);
-    const k = 0.62 + t * 0.55;
+    const t = THREE.MathUtils.clamp((y - bottom) / (top - bottom), 0, 1);
+    _c.copy(lo).lerp(hi, Math.pow(t, 0.75));
+    const k = 0.94 + rng.next() * 0.12;
     return [_c.r * k, _c.g * k, _c.b * k];
   });
-  return { wood, leaves };
+  return { wood, leaves, crown: { y: crownY, r: crownR } };
 }
 
 /** Low-poly pine: stacked cones. Cheaper than the deciduous recursion. */
 export function pine(opts = {}) {
   const { seed = 1, height = 11, radius = 2.1, tiers = 4, trunkRadius = 0.3,
-    barkColor = 0x5a4231, leafColor = 0x3a7245 } = opts;
+    barkColor = PINE_BARK, leafColor = PINE_LEAF } = opts;
   const rng = new Rng(seed);
   const trunk = limb(trunkRadius, trunkRadius * 0.6, height * 0.42, 5);
   paint(trunk, barkColor, 0.15, rng);
@@ -247,8 +291,8 @@ export function grassTuft(seed = 1, blades = 4, height = 0.62, width = 0.075) {
   const colors = new Float32Array(blades * vertCount * 3);
   const indices = [];
   // Authored in sRGB; the attribute is read as linear.
-  const ROOT_COL = srgb(0.15, 0.33, 0.09);
-  const TIP_COL = srgb(0.42, 0.66, 0.26);
+  const ROOT_COL = srgb(0.25, 0.46, 0.11);
+  const TIP_COL = srgb(0.64, 0.84, 0.31);
 
   for (let b = 0; b < blades; b++) {
     const h = height * rng.range(0.65, 1.35);

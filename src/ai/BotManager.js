@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { Rng } from '../gen/Rng.js';
-import { srgbHex } from '../gen/Palette.js';
 import { makeWeapon, RARITY_ORDER } from '../combat/Weapons.js';
 import { BotMeshPool } from './BotMesh.js';
 import { CharacterMesh } from '../player/CharacterMesh.js';
@@ -32,10 +31,13 @@ const VIEW_COS = Math.cos(1.15);  // ~66 degrees to either side
 const ENGAGE_RANGE = 95;
 const SHOOT_RANGE = 85;
 
-const OUTFIT_TINTS = CharacterMesh.OUTFITS.map((o) => srgbHex(o.jacket));
+const OUTFIT_COUNT = CharacterMesh.OUTFITS.length;
 
 const _v = new THREE.Vector3();
 const _to = new THREE.Vector3();
+const _frustum = new THREE.Frustum();
+const _projScreen = new THREE.Matrix4();
+const _sphere = new THREE.Sphere(new THREE.Vector3(), 3.5);
 const _eye = new THREE.Vector3();
 const _tgtEye = new THREE.Vector3();
 
@@ -72,7 +74,8 @@ function makeBot(id, rng) {
     strafeTimer: 0,
     buildCooldown: 0,
     damageMemory: 0,
-    outfit: rng.int(OUTFIT_TINTS.length),
+    outfit: rng.int(OUTFIT_COUNT),
+    hitFlash: 0,
     phase: rng.range(0, Math.PI * 2),
     bob: 0, lean: 0, speed: 0,
     simple: false,
@@ -103,9 +106,10 @@ export class BotManager {
     this.build = services.get('build');
     this.bus = services.get('bus');
     this.settings = services.get('settings');
+    this.camera = services.get('camera');
     const scene = services.get('scene');
 
-    this.pool = new BotMeshPool(this.count, services.get('materials').particleLit('bots'));
+    this.pool = new BotMeshPool(this.count);
     scene.add(this.pool.mesh);
 
     for (let i = 0; i < this.count; i++) {
@@ -166,6 +170,7 @@ export class BotManager {
     const s = Math.min(b.shield, left); b.shield -= s; left -= s;
     b.health = Math.max(0, b.health - left);
     b.damageMemory = 2.5;
+    b.hitFlash = 1;
     // Being shot is what makes a bot look for the shooter and take cover.
     if (src.shooter && src.shooter !== b) {
       b.target = src.shooter;
@@ -461,17 +466,32 @@ export class BotManager {
     this.stats.simple = simple;
   }
 
-  update() {
+  update(dt = 0) {
     const pool = this.pool;
     pool.begin();
+    // Cull on the CPU: the instanced mesh cannot be frustum-culled per
+    // instance, so an off-screen bot would still cost its full triangle count
+    // in both the colour and the shadow pass. The sphere is padded well past
+    // the body so a bot just off-screen still casts its shadow into view.
+    const cam = this.camera;
+    _projScreen.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    _frustum.setFromProjectionMatrix(_projScreen);
+    let culled = 0;
     for (const b of this.bots) {
       if (!b.alive) continue;
+      _sphere.center.set(b.position.x, b.position.y + 0.9, b.position.z);
+      if (!_frustum.intersectsSphere(_sphere)) { culled++; continue; }
       const norm = Math.min(1, b.speed / 7.2);
       const bob = Math.abs(Math.sin(b.phase * 2)) * 0.055 * norm;
       const lean = norm * 0.17;
-      pool.write(b.position, b.yaw, bob, lean, 1, OUTFIT_TINTS[b.outfit]);
+      // Stride amplitude grows with speed and vanishes airborne, matching the
+      // player rig so a running bot and a running player read the same.
+      const stride = norm * 0.7 * (b.body.grounded ? 1 : 0.2);
+      b.hitFlash = Math.max(0, (b.hitFlash || 0) - (dt || 0) * 6);
+      pool.write(b.position, b.yaw, bob, lean, 1, b.outfit, b.phase, stride, b.hitFlash);
     }
     pool.end();
+    this.stats.culled = culled;
   }
 
   /** Nearest living bot to a point, used by the match director and tests. */

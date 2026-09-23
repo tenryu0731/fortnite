@@ -103,15 +103,42 @@ export class Terrain {
     c.minY = mn - 8; c.maxY = mx + 8;
   }
 
+  /**
+   * Stylised sea. Colour comes from depth, baked per vertex: bright aqua over
+   * the shallows fading to a saturated blue offshore. That band of light water
+   * hugging the coast is the most recognisable thing about the genre's island
+   * silhouette, and a single flat tint cannot produce it.
+   *
+   * Opacity is also depth-driven so the sand shows through at the waterline,
+   * which softens the shore without a foam shader.
+   */
   _buildWater() {
-    const g = new THREE.PlaneGeometry(this.size * 1.6, this.size * 1.6, 1, 1);
+    const SEG = 64;
+    const extent = this.size * 1.6;
+    const g = new THREE.PlaneGeometry(extent, extent, SEG, SEG);
     g.rotateX(-Math.PI / 2);
-    const uv = g.getAttribute('uv');
-    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 90, uv.getY(i) * 90);
-    const mat = this.materials.surface('fabric', { repeat: 1 });
-    mat.color = new THREE.Color(0x2f6f9e);
-    mat.transparent = true;
-    mat.opacity = 0.86;
+    g.deleteAttribute('uv');
+    const pos = g.getAttribute('position');
+    const col = new Float32Array(pos.count * 4);
+    const shallow = new THREE.Color(0x5fe0d4), mid = new THREE.Color(0x27a9cf), deep = new THREE.Color(0x1a6fbf);
+    const c = new THREE.Color();
+    const half = this.size / 2;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i);
+      // Beyond the map edge the sea floor keeps falling away with distance, so
+      // the deep colour arrives gradually instead of along a straight seam.
+      const over = Math.max(Math.abs(x) - half, Math.abs(z) - half, 0);
+      const h = this.field.heightAt(x, z) - over * 0.5;
+      const depth = Math.max(0, SEA_LEVEL - h);
+      if (depth < 6) c.copy(shallow).lerp(mid, depth / 6);
+      else c.copy(mid).lerp(deep, Math.min(1, (depth - 6) / 18));
+      col[i * 4] = c.r; col[i * 4 + 1] = c.g; col[i * 4 + 2] = c.b;
+      col[i * 4 + 3] = 0.55 + Math.min(1, depth / 3) * 0.37;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 4));
+    const mat = new THREE.MeshLambertMaterial({
+      vertexColors: true, transparent: true, depthWrite: false,
+    });
     this.water = new THREE.Mesh(g, mat);
     this.water.position.y = SEA_LEVEL;
     this.water.renderOrder = -1;

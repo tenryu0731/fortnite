@@ -110,14 +110,13 @@ export class HeldWeapon {
     this.mesh = new THREE.Mesh(weaponGeometry('rifle', 'common'), material);
     this.mesh.castShadow = true;
     this.mesh.visible = false;
-    // Weapons are authored pointing +Z. The socket hangs off the far end of the
-    // right arm, whose local -Y runs down the limb, so the model is pitched by
-    // +90 degrees to lay the barrel along the arm and point it away from the
-    // character. Pitching the other way aims the muzzle back over the
-    // shoulder, which is what made the character look like they were holding
-    // the gun backwards.
-    this.mesh.rotation.set(-Math.PI / 2 + 0.06, 0, 0);
-    this.mesh.position.set(0, -0.02, 0.06);
+    // Weapons are authored pointing +Z. The socket sits in the glove at the end
+    // of the right arm, whose local -Y runs down the limb, so the model is
+    // pitched +90 degrees to lay the barrel along the arm: wherever the arm
+    // points, the muzzle points. The character rig then poses the socket for
+    // the low-ready carry and the level aim.
+    this.mesh.rotation.set(Math.PI / 2, 0, 0);
+    this.mesh.position.set(0, 0, 0);
   }
 
   set(cls, rarityKey) {

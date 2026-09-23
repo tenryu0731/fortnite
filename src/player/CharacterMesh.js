@@ -1,69 +1,54 @@
 import * as THREE from 'three';
-import * as MeshGen from '../gen/MeshGen.js';
 import { Rng } from '../gen/Rng.js';
-import { srgbHex } from '../gen/Palette.js';
+import * as Humanoid from '../gen/Humanoid.js';
 
 /**
- * CharacterMesh — a procedurally generated, procedurally animated humanoid.
+ * CharacterMesh — the player's rig: the shared stylised humanoid body (see
+ * gen/Humanoid.js) split into five rigid parts, procedurally animated.
  *
- * The body is five rigid parts (torso group, two arms, two legs) rather than a
- * skinned mesh: at this art scale rigid limbs are indistinguishable from
- * skinning, and five hierarchy nodes are far cheaper to update than a skeleton
- * with a bone texture. Animation is entirely procedural — a phase accumulator
- * driven by ground speed feeds the limb swing, with additive poses layered on
- * top for crouch, airborne and aiming.
+ * The body is five rigid parts (torso, two arms, two legs) rather than a
+ * skinned mesh: at this art scale rigid limbs read the same as skinning, and
+ * five hierarchy nodes are far cheaper to update than a skeleton. A phase
+ * accumulator driven by ground speed feeds the limb swing, with additive
+ * poses layered on top for crouch, airborne, aiming and the pickaxe chop.
  *
- * Outfits are seeded, so every bot in a match looks different without art.
+ * FACING. The figure faces -Z, the same as lookDirection() at yaw 0, so the
+ * root takes the player's yaw unmodified. Every pose sign below follows from
+ * that: an arm hanging along -Y reaches forward when pitched by a POSITIVE
+ * angle about X ((0,-1,0) -> (0, -cos a, -sin a)), and the torso leans forward
+ * with a NEGATIVE pitch. The previous model faced +Z, so the whole body — arms,
+ * chest, cap brim — pointed backwards while a counter-rotated gun pointed
+ * forwards.
  */
 
-const HEIGHT = 1.8;
-const HIP_Y = 0.88;
+const HEIGHT = Humanoid.HEIGHT;
+const HIP_Y = Humanoid.HIP_Y;
+const ARM_LEN = Humanoid.ARM_LEN;
 // One pickaxe swing, matched to the tool's 1.4/s fire rate so the animation
 // finishes just before the next swing is allowed.
 const SWING_TIME = 0.42;
-// Low-ready carry. The weapon socket rides the arm bone, which hangs straight
-// down when the arm is lowered — so a rifle at rest ends up aimed at the sky.
-// This pitches the socket back to horizontal (plus a touch of muzzle-down) so
-// the idle pose reads as carrying a weapon rather than holding it upside down.
-// It blends out as the aim pose takes over, where the raised arm already
-// points the barrel correctly.
-const CARRY_PITCH = Math.PI / 2 + 0.18;
-const CARRY_ROLL = 0.22;
-// The aim pose stops the arm just under horizontal so the barrel does not
-// cross the character's own head from the over-shoulder camera; that leaves
-// the weapon tilted about 22 degrees up, which this levels back out so the
-// muzzle agrees with the crosshair.
-const AIM_PITCH = 0.38;
-const SHOULDER_Y = 0.52;      // relative to hips
-const ARM_LEN = 0.62;
-const LEG_LEN = HIP_Y;
-
-const OUTFITS = [
-  { jacket: 0x3d5a8a, trouser: 0x2f3542, boot: 0x23262c, accent: 0xe0a12c },
-  { jacket: 0x7a3b46, trouser: 0x3a3138, boot: 0x241f22, accent: 0xd9d2c2 },
-  { jacket: 0x3f6b4e, trouser: 0x37402f, boot: 0x22261f, accent: 0xc8b06a },
-  { jacket: 0x5a4a7a, trouser: 0x33304a, boot: 0x232030, accent: 0x8fd8e0 },
-  { jacket: 0x9a6a3a, trouser: 0x4a3b2c, boot: 0x2b241c, accent: 0xf0e2c0 },
-  { jacket: 0x2f4f5f, trouser: 0x293840, boot: 0x1d2226, accent: 0xff8a4c },
-];
-const SKINS = [0xf0c8a0, 0xd9a173, 0xa9744a, 0x7a4f30, 0x54331f];
-
-/** Limb built with its pivot at the top, extending down -Y. */
-function limb(width, length, depth, colorTop, colorBottom, taper = 0.85) {
-  const upper = MeshGen.xform(MeshGen.roundedBox(width, length * 0.55, depth, 0.05, 2),
-    { pos: [0, -length * 0.275, 0] });
-  MeshGen.paint(upper, colorTop);
-  const lower = MeshGen.xform(MeshGen.roundedBox(width * taper, length * 0.5, depth * taper, 0.05, 2),
-    { pos: [0, -length * 0.78, 0] });
-  MeshGen.paint(lower, colorBottom);
-  return MeshGen.merge([upper, lower]);
-}
+// Arm poses, as (shoulder pitch, elbow bend) pairs. Positive pitch swings a
+// hanging limb forward. The barrel is laid along the right forearm, so its
+// direction is shoulder + elbow + socket pitch; the socket pitches below make
+// that sum land where each pose wants the muzzle.
+//
+// Aim: weapon arm raised to just under horizontal (raising it fully puts the
+// barrel across the head from the over-shoulder camera), elbow nearly
+// straight, muzzle level with the crosshair.
+const AIM_ARM = 1.24, AIM_ELBOW = 0.25;
+const AIM_SOCKET = Math.PI / 2 - (AIM_ARM + AIM_ELBOW);
+// Carry: upper arm near the body, forearm forward, muzzle a little low — the
+// low-ready every shooter's idle pose uses.
+const CARRY_ARM = 0.3, CARRY_ELBOW = 1.0;
+const CARRY_SOCKET = (Math.PI / 2 - 0.18) - (CARRY_ARM + CARRY_ELBOW);
+// Support hand on the foregrip, reached across the body.
+const SUPPORT_CARRY = { arm: 0.5, elbow: 1.05, roll: 0.38 };
+const SUPPORT_AIM = { arm: AIM_ARM - 0.02, elbow: 0.5, roll: 0.46 };
 
 export class CharacterMesh {
   constructor(materials, seed = 1, opts = {}) {
     const rng = new Rng(seed);
-    const outfit = opts.outfit || rng.pick(OUTFITS);
-    const skin = opts.skin || rng.pick(SKINS);
+    const outfit = opts.outfit || rng.pick(Humanoid.OUTFITS);
     this.outfit = outfit;
     this.material = materials.vertex('character');
 
@@ -74,61 +59,64 @@ export class CharacterMesh {
     this.hips.position.y = HIP_Y;
     this.root.add(this.hips);
 
-    /* --- torso, head, pack: one static mesh -------------------------- */
-    const torsoParts = [];
-    torsoParts.push(MeshGen.paint(
-      MeshGen.xform(MeshGen.roundedBox(0.46, 0.58, 0.27, 0.07, 2), { pos: [0, 0.29, 0] }), outfit.jacket));
-    // Chest stripe reads as a zip/harness and gives the silhouette a front.
-    torsoParts.push(MeshGen.paint(
-      MeshGen.xform(MeshGen.roundedBox(0.10, 0.42, 0.03, 0.02, 1), { pos: [0, 0.30, 0.145] }), outfit.accent));
-    torsoParts.push(MeshGen.paint(
-      MeshGen.xform(MeshGen.roundedBox(0.30, 0.36, 0.18, 0.05, 2), { pos: [0, 0.30, -0.20] }), outfit.trouser));
-    torsoParts.push(MeshGen.paint(
-      MeshGen.xform(MeshGen.roundedBox(0.19, 0.11, 0.19, 0.04, 1), { pos: [0, 0.62, 0] }), skin));
-    torsoParts.push(MeshGen.paint(
-      MeshGen.xform(MeshGen.roundedBox(0.25, 0.26, 0.25, 0.07, 2), { pos: [0, 0.80, 0] }), skin));
-    // Cap: a flat brimmed slab so the head reads with a facing direction.
-    torsoParts.push(MeshGen.paint(
-      MeshGen.xform(MeshGen.roundedBox(0.27, 0.09, 0.27, 0.04, 1), { pos: [0, 0.93, 0] }), outfit.jacket));
-    torsoParts.push(MeshGen.paint(
-      MeshGen.xform(MeshGen.roundedBox(0.24, 0.03, 0.12, 0.02, 1), { pos: [0, 0.90, 0.17] }), outfit.jacket));
-    this.torso = new THREE.Mesh(MeshGen.merge(torsoParts), this.material);
+    const parts = Humanoid.buildParts({ joints: true });
+    for (const k of Object.keys(parts)) Humanoid.applyOutfit(parts[k], outfit);
+
+    // Torso, head and pack. Re-based so the mesh origin is the hip joint, which
+    // is where lean and crouch should pivot from.
+    parts.body.translate(0, -HIP_Y, 0);
+    this.torso = new THREE.Mesh(parts.body, this.material);
     this.torso.castShadow = true;
     this.hips.add(this.torso);
 
-    /* --- limbs --------------------------------------------------------- */
-    const mkArm = (side) => {
-      const pivot = new THREE.Group();
-      pivot.position.set(side * 0.29, SHOULDER_Y, 0);
-      const mesh = new THREE.Mesh(limb(0.15, ARM_LEN, 0.16, outfit.jacket, skin), this.material);
+    const mkLimb = (geo, pivot) => {
+      const node = new THREE.Group();
+      node.position.set(pivot[0], pivot[1] - HIP_Y, pivot[2]);
+      const mesh = new THREE.Mesh(geo, this.material);
       mesh.castShadow = true;
-      pivot.add(mesh);
-      this.hips.add(pivot);
-      return pivot;
+      node.add(mesh);
+      this.hips.add(node);
+      return node;
     };
-    const mkLeg = (side) => {
-      const pivot = new THREE.Group();
-      pivot.position.set(side * 0.12, 0, 0);
-      const mesh = new THREE.Mesh(limb(0.18, LEG_LEN, 0.19, outfit.trouser, outfit.boot), this.material);
+    const P = Humanoid.PIVOTS, B = Humanoid.BONE;
+    this.armL = mkLimb(parts.armL, P[B.ARM_L]);
+    this.armR = mkLimb(parts.armR, P[B.ARM_R]);
+    this.legL = mkLimb(parts.legL, P[B.LEG_L]);
+    this.legR = mkLimb(parts.legR, P[B.LEG_R]);
+    const mkKnee = (leg, geo) => {
+      const node = new THREE.Group();
+      node.position.y = -Humanoid.KNEE_DROP;
+      const mesh = new THREE.Mesh(geo, this.material);
       mesh.castShadow = true;
-      pivot.add(mesh);
-      this.hips.add(pivot);
-      return pivot;
+      node.add(mesh);
+      leg.add(node);
+      return node;
     };
-    this.armL = mkArm(-1);
-    this.armR = mkArm(1);
-    this.legL = mkLeg(-1);
-    this.legR = mkLeg(1);
+    this.kneeL = mkKnee(this.legL, parts.shinL);
+    this.kneeR = mkKnee(this.legR, parts.shinR);
+    const mkElbow = (arm, geo) => {
+      const node = new THREE.Group();
+      node.position.y = -Humanoid.ELBOW_DROP;
+      const mesh = new THREE.Mesh(geo, this.material);
+      mesh.castShadow = true;
+      node.add(mesh);
+      arm.add(node);
+      return node;
+    };
+    this.elbowL = mkElbow(this.armL, parts.foreL);
+    this.elbowR = mkElbow(this.armR, parts.foreR);
 
     /* --- weapon socket -------------------------------------------------- */
-    // Attached to the right arm so a held weapon follows the aim pose.
+    // In the glove at the end of the right arm, so a held weapon follows the
+    // aim pose.
     this.weaponSocket = new THREE.Group();
-    this.weaponSocket.position.set(0, -ARM_LEN * 0.92, 0.06);
-    this.armR.add(this.weaponSocket);
+    this.weaponSocket.position.set(0, -(ARM_LEN - Humanoid.ELBOW_DROP) + 0.04, 0);
+    this.elbowR.add(this.weaponSocket);
 
     this.phase = rng.range(0, Math.PI * 2);
     this.aimBlend = 0;
     this.swingTimer = 0;
+    this.twoHanded = true;
     this.crouchBlend = 0;
     this.airBlend = 0;
     this.lean = 0;
@@ -169,45 +157,66 @@ export class CharacterMesh {
     const swing2 = Math.sin(this.phase * 2);
     const amp = norm * 0.85 * (1 - this.airBlend) * (1 - this.crouchBlend * 0.45);
 
-    // Legs: opposed swing, plus a tuck while airborne.
+    // Legs: opposed swing, plus a knees-forward tuck while airborne.
     const tuck = this.airBlend * 0.7;
     this.legL.rotation.x = swing * amp + tuck * 0.9;
     this.legR.rotation.x = -swing * amp + tuck * 0.5;
-    this.legL.rotation.z = this.crouchBlend * -0.12;
-    this.legR.rotation.z = this.crouchBlend * 0.12;
+    // Knees bend backward (negative pitch) on the recovering leg's forward
+    // swing, which lifts the foot clear instead of dragging a stiff leg.
+    const liftL = Math.max(0, Math.sin(this.phase + 0.9)) * amp * 1.3;
+    const liftR = Math.max(0, Math.sin(this.phase + 0.9 + Math.PI)) * amp * 1.3;
+    // Crouch: thighs forward and shins back, sized so the feet stay on the
+    // ground as the hips drop (0.40 cos 1.1 + 0.46 cos 0.7 = the crouched
+    // hip height).
+    const cr = this.crouchBlend;
+    this.legL.rotation.x += cr * 1.1;
+    this.legR.rotation.x += cr * 0.95;
+    this.kneeL.rotation.x = -(liftL + cr * 1.8 + tuck * 1.2);
+    this.kneeR.rotation.x = -(liftR + cr * 1.6 + tuck * 0.9);
+    this.legL.rotation.z = cr * -0.08;
+    this.legR.rotation.z = cr * 0.08;
 
-    // Arms: counter-swing when running, raised and forward when aiming.
+    // Arms. The weapon arm blends between the low-ready carry and the aim
+    // pose; the off arm either supports a two-handed weapon or, with the
+    // pickaxe, swings freely against the stride.
+    const a = this.aimBlend, c = 1 - a;
     const runArm = -swing * amp * 0.75;
-    // Raise the weapon arm to just under horizontal: raising it fully puts the
-    // barrel across the character's own head from the over-shoulder camera.
-    const aimArmR = -1.24 - (p.pitch || 0) * 0.9;
-    const aimArmL = -1.02 - (p.pitch || 0) * 0.9;
-    this.armR.rotation.x = runArm * (1 - this.aimBlend) + aimArmR * this.aimBlend;
-    this.armL.rotation.x = -runArm * (1 - this.aimBlend) + aimArmL * this.aimBlend;
-    this.armR.rotation.z = -0.10 - this.aimBlend * 0.12 + this.airBlend * -0.5;
-    this.armL.rotation.z = 0.10 + this.aimBlend * 0.42 + this.airBlend * 0.5;
-
-    // Overhead chop: wind up fast, strike through, recover. `t` runs 1 -> 0.
-    if (this.swingTimer > 0) {
-      const t = this.swingTimer / SWING_TIME;
-      // Windup occupies the first third, the strike the rest, so the arc
-      // accelerates into the hit the way a swung tool does.
-      const arc = t > 0.66 ? (1 - t) / 0.34 : (t / 0.66) ** 0.6;
-      this.armR.rotation.x = -2.5 + arc * 3.4;
-      this.armR.rotation.z = -0.10 - arc * 0.25;
-      this.torso.rotation.y = (p.torsoYaw || 0) - arc * 0.30;
+    const pitch = p.pitch || 0;
+    this.armR.rotation.x = (CARRY_ARM + runArm * 0.25) * c + (AIM_ARM + pitch * 0.9) * a;
+    this.elbowR.rotation.x = CARRY_ELBOW * c + AIM_ELBOW * a;
+    this.armR.rotation.z = 0.1 * c + 0.02 * a + this.airBlend * 0.4;
+    if (this.twoHanded !== false) {
+      this.armL.rotation.x = (SUPPORT_CARRY.arm + runArm * 0.2) * c + (SUPPORT_AIM.arm + pitch * 0.9) * a;
+      this.elbowL.rotation.x = SUPPORT_CARRY.elbow * c + SUPPORT_AIM.elbow * a;
+      this.armL.rotation.z = SUPPORT_CARRY.roll * c + SUPPORT_AIM.roll * a;
+    } else {
+      this.armL.rotation.x = -runArm;
+      this.elbowL.rotation.x = 0.35 + Math.abs(runArm) * 0.4;
+      this.armL.rotation.z = -0.1 - this.airBlend * 0.5;
     }
 
-    this.weaponSocket.rotation.x = -CARRY_PITCH * (1 - this.aimBlend) - AIM_PITCH * this.aimBlend;
-    this.weaponSocket.rotation.z = CARRY_ROLL * (1 - this.aimBlend);
+    // Overhead chop: wind up behind the head, strike forward and down, then
+    // recover. `t` runs 1 -> 0; the windup takes the first third so the arc
+    // accelerates into the hit the way a swung tool does.
+    if (this.swingTimer > 0) {
+      const t = this.swingTimer / SWING_TIME;
+      const arc = t > 0.66 ? (1 - t) / 0.34 : (t / 0.66) ** 0.6;
+      this.armR.rotation.x = 0.8 + arc * 2.8;
+      this.elbowR.rotation.x = 0.25 + arc * 0.3;
+      this.armR.rotation.z = 0.08 + arc * 0.2;
+      this.torso.rotation.y = (p.torsoYaw || 0) + arc * 0.3;
+    }
+
+    this.weaponSocket.rotation.x = CARRY_SOCKET * c + AIM_SOCKET * a;
 
     // Torso: vertical bob, forward lean with speed, roll into strafes.
     const bob = Math.abs(swing2) * 0.035 * norm * (1 - this.airBlend);
-    const crouchDrop = this.crouchBlend * 0.34;
+    const crouchDrop = this.crouchBlend * 0.33;
     this.hips.position.y = HIP_Y + bob - crouchDrop;
     const leanTarget = norm * 0.16 + this.aimBlend * 0.06;
     this.lean += (leanTarget - this.lean) * k;
-    this.torso.rotation.x = this.lean + this.crouchBlend * 0.30;
+    // Negative pitch tips the chest toward -Z, i.e. forward.
+    this.torso.rotation.x = -(this.lean + this.crouchBlend * 0.30);
     this.torso.rotation.z = (p.strafe || 0) * -0.08;
     // Head/torso yaw offset so the upper body tracks where the player looks.
     // A swing already set this above and must win.
@@ -224,6 +233,6 @@ export class CharacterMesh {
   }
 
   static get HEIGHT() { return HEIGHT; }
-  static outfitFor(seed) { return OUTFITS[seed % OUTFITS.length]; }
-  static get OUTFITS() { return OUTFITS; }
+  static outfitFor(seed) { return Humanoid.OUTFITS[seed % Humanoid.OUTFITS.length]; }
+  static get OUTFITS() { return Humanoid.OUTFITS; }
 }

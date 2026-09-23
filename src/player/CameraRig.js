@@ -14,10 +14,15 @@ import * as THREE from 'three';
  * wall does not make the camera lurch.
  */
 
+// Framing follows the genre's over-the-shoulder camera: close enough that the
+// character fills a good third of the frame height, and shifted so they stand
+// left of the crosshair rather than on top of it. Measured against reference
+// gameplay frames, the previous 3.5m arm left the character a small figure in
+// the middle of the screen.
 const BASE = {
-  distance: 3.5,
-  shoulder: 0.62,
-  heightOffset: 0.16,
+  distance: 2.75,
+  shoulder: 0.78,
+  heightOffset: 0.22,
   fov: 75,
 };
 const ADS = {

@@ -130,6 +130,9 @@ export class CombatSystem {
   _syncHeld() {
     const w = this.weapon;
     this.held.set(w ? w.def.class : null, w ? w.rarity : 'common');
+    // Guns are carried two-handed; the pickaxe is held in one hand with the
+    // other arm free, which is what the rig needs to know to pose the off arm.
+    if (this.player.mesh) this.player.mesh.twoHanded = !!w && w.def.class !== 'melee';
     this.player.weaponFov = w && w.def.adsFov ? w.def.adsFov : null;
   }
 

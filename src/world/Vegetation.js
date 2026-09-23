@@ -78,22 +78,36 @@ export class Vegetation {
 
     // Far proxies must match the near tier's silhouette and mean albedo,
     // otherwise the LOD switch shows up as a visible colour and size seam.
-    // Bounds and colours below are taken from the measured near-tier geometry.
-    const treeLeafCol = srgbHex(0x4c8c3d);
-    const pineLeafCol = srgbHex(0x3a7245);
+    // Colours come from the same constants the near tier is painted with, and
+    // the crown uses the same volumetric normals so it shades the same way.
+    const pineLeafCol = srgbHex(MeshGen.PINE_LEAF);
     const shade = (col, k) => [col[0] * k, col[1] * k, col[2] * k];
-
-    // Near tree canopy occupies y 6.2..10.4 with a ~3.6m radius.
+    const crown = t.crown;
+    const lo = new THREE.Color(MeshGen.TREE_LEAF_DARK), hi = new THREE.Color(MeshGen.TREE_LEAF);
+    const tmp = new THREE.Color();
+    // Three low-poly lumps rather than one smooth ellipsoid: a single blob
+    // reads as a green jellybean at distance, while a lumpy outline keeps the
+    // near crown's silhouette at a quarter of its triangles.
+    const lumps = [
+      [0, crown.y + crown.r * 0.12, 0, crown.r * 1.05, crown.r * 0.82],
+      [crown.r * 0.75, crown.y - crown.r * 0.12, crown.r * 0.25, crown.r * 0.7, crown.r * 0.6],
+      [-crown.r * 0.6, crown.y - crown.r * 0.15, -crown.r * 0.45, crown.r * 0.72, crown.r * 0.6],
+    ].map(([x, y, z, r, ry]) => MeshGen.xform(new THREE.IcosahedronGeometry(1, 0),
+      { pos: [x, y, z], scale: [r, ry, r], rot: [0.3, x, 0] }));
+    const farCrown = MeshGen.merge(lumps);
+    MeshGen.sphericalNormals(farCrown, 0, crown.y - crown.r * 0.1, 0, crown.r * 1.55, crown.r * 0.95, crown.r * 1.55);
+    MeshGen.paintBy(farCrown, (x, y) => {
+      const k = Math.min(1, Math.max(0, (y - (crown.y - crown.r * 0.8)) / (crown.r * 1.7)));
+      tmp.copy(lo).lerp(hi, Math.pow(k, 0.75));
+      return [tmp.r, tmp.g, tmp.b];
+    });
     const farTreeParts = [
-      MeshGen.paint(MeshGen.xform(MeshGen.box(0.55, 6.6, 0.55), { pos: [0, 3.3, 0] }), 0x6b4b32),
-      MeshGen.paintBy(
-        MeshGen.xform(new THREE.IcosahedronGeometry(3.5, 0), { pos: [0, 8.2, 0], scale: [1, 0.62, 1] }),
-        (x, y) => shade(treeLeafCol, 0.90 + Math.min(1, Math.max(0, (y - 6.2) / 4.2)) * 0.30),
-      ),
+      MeshGen.paint(MeshGen.xform(MeshGen.box(0.6, crown.y, 0.6), { pos: [0, crown.y / 2, 0] }), MeshGen.TREE_BARK),
+      farCrown,
     ];
     // Near pine canopy occupies y 2.7..11.0 with a ~2.2m base radius.
     const farPineParts = [
-      MeshGen.paint(MeshGen.xform(MeshGen.box(0.48, 3.4, 0.48), { pos: [0, 1.7, 0] }), 0x5a4231),
+      MeshGen.paint(MeshGen.xform(MeshGen.box(0.48, 3.4, 0.48), { pos: [0, 1.7, 0] }), MeshGen.PINE_BARK),
       MeshGen.paintBy(MeshGen.xform(new THREE.ConeGeometry(2.25, 5.4, 5, 1, true), { pos: [0, 5.4, 0] }),
         (x, y) => shade(pineLeafCol, 0.76 + Math.min(1, Math.max(0, y / 11)) * 0.30)),
       MeshGen.paintBy(MeshGen.xform(new THREE.ConeGeometry(1.45, 4.2, 5, 1, true), { pos: [0, 8.9, 0] }),

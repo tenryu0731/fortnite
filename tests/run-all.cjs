@@ -12,6 +12,8 @@ const SUITES = [
   { name: 'gameplay', file: 'gameplay.cjs' },
   { name: 'touch', file: 'touch.cjs' },
   { name: 'visual', file: 'screenshots.cjs' },
+  // After visual: it measures the baselines the visual suite just verified.
+  { name: 'style', file: 'style.cjs' },
   { name: 'perf', file: 'perf.cjs' },
 ];
 

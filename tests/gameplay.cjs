@@ -833,6 +833,50 @@ const SUITE = `async () => {
     };
   });
 
+  t('character: the body faces where the player looks and aims forward', () => {
+    // The original model faced +Z while the player looks -Z at yaw 0, so the
+    // whole body, and both aiming arms, pointed backwards. A counter-rotated
+    // gun hid it; this checks the body itself.
+    player.pitch = 0;
+    player.aiming = true;
+    for (let i = 0; i < 90; i++) player.update(1 / 60);
+    player.mesh.root.updateMatrixWorld(true);
+    const look = player.lookDirection(new THREE.Vector3());
+    // The chest zip sits on the model's front at -Z.
+    const front = new THREE.Vector3(0, 0, -1).transformDirection(player.mesh.root.matrixWorld);
+    const shoulder = new THREE.Vector3(); player.mesh.armR.getWorldPosition(shoulder);
+    const hand = new THREE.Vector3(); player.mesh.weaponSocket.getWorldPosition(hand);
+    const reach = hand.sub(shoulder).normalize();
+    player.aiming = false;
+    return {
+      ok: front.dot(look) > 0.95 && reach.dot(look) > 0.7,
+      detail: 'front.look ' + front.dot(look).toFixed(3) + ', aiming hand reach.look ' + reach.dot(look).toFixed(3),
+    };
+  });
+
+  t('bots: carried rifles and bodies face the direction the bot looks', () => {
+    // Bots are one merged instanced body; its rifle must point where the bot
+    // looks, or every opponent appears to walk backwards aiming behind itself.
+    const geo = bots.pool.mesh.geometry;
+    const part = geo.getAttribute('part');
+    const pos = geo.getAttribute('position');
+    let gz = 0, n = 0, gmin = 1e9;
+    for (let i = 0; i < part.count; i++) {
+      if (part.getX(i) !== 8) continue;      // the GUN palette slot
+      gz += pos.getZ(i); n++;
+      gmin = Math.min(gmin, pos.getZ(i));
+    }
+    const b = bots.bots[0];
+    b.yaw = 0.7;
+    const look = b.lookDirection(new THREE.Vector3());
+    // Model -Z under the instance yaw.
+    const fwd = new THREE.Vector3(-Math.sin(b.yaw), 0, -Math.cos(b.yaw));
+    return {
+      ok: n > 0 && gz / n < -0.1 && gmin < -0.6 && fwd.dot(look) > 0.99,
+      detail: 'gun centroid z ' + (gz / n).toFixed(2) + ', muzzle z ' + gmin.toFixed(2) + ', model front.look ' + fwd.dot(look).toFixed(3),
+    };
+  });
+
   t('weapon: the barrel points where the player is looking, aiming or not', () => {
     // The held weapon rides the arm bone, which hangs straight down at rest.
     // Without a carry pose the idle barrel aims at the sky, which reads as the
@@ -2041,8 +2085,31 @@ const SUITE = `async () => {
   t('bots: the whole opposing team costs one draw call', () => {
     reviveAll();
     bots.update(1 / 60);
-    return { ok: bots.pool.mesh.count === bots.aliveCount && bots.state().drawCalls === 1,
-             detail: bots.aliveCount + ' bots drawn as ' + bots.pool.mesh.count + ' instances in 1 draw call' };
+    // Every living bot is either drawn or was culled for being off-screen,
+    // and all of the drawn ones share one instanced draw.
+    const drawn = bots.pool.mesh.count, culled = bots.stats.culled || 0;
+    return { ok: drawn + culled === bots.aliveCount && bots.state().drawCalls === 1,
+             detail: bots.aliveCount + ' bots: ' + drawn + ' drawn in 1 draw call, ' + culled + ' culled off-screen' };
+  });
+
+  t('bots: off-screen bots are culled, on-screen ones never are', () => {
+    // The instanced mesh cannot be frustum-culled per instance by three, so
+    // the manager culls on the CPU. It must never drop a visible bot.
+    reviveAll();
+    const cam = G.engine.camera;
+    cam.updateMatrixWorld(true);
+    bots.update(1 / 60);
+    const frustum = new THREE.Frustum().setFromProjectionMatrix(
+      new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    let visible = 0;
+    for (const b of bots.bots) {
+      if (!b.alive) continue;
+      if (frustum.containsPoint(new THREE.Vector3(b.position.x, b.position.y + 0.9, b.position.z))) visible++;
+    }
+    return {
+      ok: bots.pool.mesh.count >= visible,
+      detail: visible + ' bots in view, ' + bots.pool.mesh.count + ' drawn, ' + (bots.stats.culled || 0) + ' culled',
+    };
   });
 
   t('bots: perception is time-sliced across frames', () => {
