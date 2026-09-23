@@ -185,7 +185,7 @@ export class Minimap {
     // rather than a wallhack.
     ctx.fillStyle = 'rgba(255, 90, 106, 0.95)';
     for (const b of this.bots.bots) {
-      if (!b.alive) continue;
+      if (!b.alive || b.inBus) continue;
       const d = Math.hypot(b.position.x - p.x, b.position.z - p.z);
       if (d > R * 0.36) continue;
       const [x, y] = toScreen(b.position.x, b.position.z);

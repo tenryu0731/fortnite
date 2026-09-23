@@ -1898,7 +1898,8 @@ const SUITE = `async () => {
     return b;
   };
   const reviveAll = () => {
-    for (const b of bots.bots) { b.alive = true; b.health = 100; }
+    // inBus: a match started by an earlier test leaves bots on the bus.
+    for (const b of bots.bots) { b.alive = true; b.health = 100; b.inBus = false; }
     bots.aliveCount = bots.bots.length;
   };
 
@@ -2070,16 +2071,136 @@ const SUITE = `async () => {
              detail: 'bot placed a ' + (rec ? rec.meta.material : '?') + ' wall, grid ' + before + ' -> ' + build.grid.count };
   });
 
+  // A still, fully settled bot aiming at a still target, for aim comparisons.
+  const aimOf = (skill, settle, targetVel) => {
+    const b = bots.bots[0];
+    const saved = { skill: b.skill, settle: b.settle, target: b.target, speed: b.speed };
+    b.skill = skill; b.settle = settle; b.speed = 0;
+    const tgt = { alive: true, position: b.position.clone().add(new THREE.Vector3(0, 0, -25)),
+      velocity: targetVel || new THREE.Vector3() };
+    b.target = tgt;
+    bots._updateAim(b, 0, true);
+    const err = b.aimError;
+    Object.assign(b, saved);
+    return err;
+  };
+
   t('bots: low-skill bots aim worse than high-skill bots', () => {
-    // Recompute from skill: earlier tests deliberately zero one bot's error.
-    for (const b of bots.bots) b.aimError = 0.075 * (1 - b.skill) + 0.006;
-    const errors = bots.bots.map((b) => ({ skill: b.skill, err: b.aimError }));
-    errors.sort((a, b) => a.skill - b.skill);
-    const worst = errors[0], best = errors[errors.length - 1];
-    const monotone = errors.every((e, i) => i === 0 || e.err <= errors[i - 1].err + 1e-9);
-    return { ok: monotone && worst.err > best.err * 2,
-             detail: 'skill ' + worst.skill.toFixed(2) + ' -> error ' + worst.err.toFixed(4)
-               + '; skill ' + best.skill.toFixed(2) + ' -> ' + best.err.toFixed(4) };
+    const skills = [0.1, 0.3, 0.5, 0.7, 0.9];
+    const errs = skills.map((k) => aimOf(k, 1));
+    const monotone = errs.every((e, i) => i === 0 || e < errs[i - 1]);
+    return { ok: monotone && errs[0] > errs[4] * 2.5,
+             detail: skills.map((k, i) => k + ':' + errs[i].toFixed(4)).join(' ') };
+  });
+
+  t('bots: aim starts wide on a new target and tightens while tracking', () => {
+    // Full accuracy from the first shot reads as an aimbot. Aim should settle.
+    const fresh = aimOf(0.9, 0), settled = aimOf(0.9, 1);
+    return { ok: fresh > settled * 2.5,
+             detail: 'strong bot error ' + fresh.toFixed(4) + ' on acquisition -> ' + settled.toFixed(4) + ' settled' };
+  });
+
+  t('bots: a strafing target is harder to hit than a still one', () => {
+    const still = aimOf(0.9, 1);
+    const strafing = aimOf(0.9, 1, new THREE.Vector3(6.5, 0, 0));
+    const weakStrafe = aimOf(0.3, 1, new THREE.Vector3(6.5, 0, 0)) - aimOf(0.3, 1);
+    return { ok: strafing > still * 1.6 && weakStrafe > strafing - still,
+             detail: 'strong: still ' + still.toFixed(4) + ', strafing ' + strafing.toFixed(4)
+               + '; weak bots lose more to strafing (+' + weakStrafe.toFixed(4) + ')' };
+  });
+
+  t('bots: difficulty sets the skill range bots are drawn from', () => {
+    const mean = (name) => {
+      bots.setDifficulty(name);
+      bots.spawnAll();
+      return bots.bots.reduce((a, b) => a + b.skill, 0) / bots.bots.length;
+    };
+    const easy = mean('easy'), normal = mean('normal'), hard = mean('hard');
+    bots.setDifficulty('normal');
+    bots.spawnAll();
+    return { ok: easy < normal && normal < hard && hard - easy > 0.3,
+             detail: 'mean skill easy ' + easy.toFixed(2) + ', normal ' + normal.toFixed(2) + ', hard ' + hard.toFixed(2) };
+  });
+
+  t('bots: an idle bot turns toward gunfire it hears', () => {
+    reviveAll();
+    const b = bots.bots[1];
+    b.state = 1; b.target = null; b.heardAt = null; b.heardTimer = 0;
+    b.yaw = 0;                                   // facing -Z
+    const origin = b.position.clone().add(new THREE.Vector3(0, 1.5, 40));   // behind it
+    G.engine.bus.emit('weapon:fired', { shooter: bots.bots[2], weapon: 'ar', origin, dir: new THREE.Vector3(0, 0, -1) });
+    const heard = !!b.heardAt && b.heardTimer > 0;
+    for (let i = 0; i < 90; i++) bots._face(b, 1 / 60, new THREE.Vector3());
+    const look = b.lookDirection(new THREE.Vector3());
+    const toward = origin.clone().sub(b.position).setY(0).normalize();
+    return { ok: heard && look.dot(toward) > 0.9,
+             detail: 'heard=' + heard + ', now facing the sound ' + look.dot(toward).toFixed(2) };
+  });
+
+  t('bots: a hurt bot with a potion heals when out of the fight', () => {
+    reviveAll();
+    const b = bots.bots[3];
+    b.state = 1; b.target = null; b.damageMemory = 0;
+    b.shield = 0; b.health = 60; b.potions = 1; b.skill = 0.3;
+    bots._maybeHeal(b);
+    const started = b.state === 7;
+    for (let i = 0; i < 180 && b.state === 7; i++) bots._stepHeal(b, 1 / 60);
+    return { ok: started && b.shield >= 50 && b.potions === 0 && b.state === 1,
+             detail: 'healing=' + started + ', shield now ' + b.shield + ', potions left ' + b.potions };
+  });
+
+  t('bots: a bot walks to and picks up a better weapon nearby', () => {
+    reviveAll();
+    const lootSys = G.engine.services.get('loot');
+    const b = bots.bots[4];
+    b.state = 1; b.target = null;
+    b.weapon = makeWeapon('pistol', 'common');
+    const item = lootSys.spawnWeapon(b.position.x + 6, b.position.y + 0.5, b.position.z, 'ar', 'epic');
+    bots._scanLoot(b);
+    const goal = b.lootGoal === item;
+    // Walk it there with the real steering and step logic. Nobody else may be
+    // around: a bot that spots an opponent rightly drops the loot and fights.
+    const playerWasAlive = player.alive;
+    player.alive = false;
+    for (let i = 0; i < 240 && b.weapon.id === 'pistol'; i++) {
+      for (const o of bots.bots) if (o !== b) o.alive = false;
+      bots.fixedUpdate(1 / 60);
+    }
+    player.alive = playerWasAlive;
+    reviveAll();
+    return { ok: goal && b.weapon.id === 'ar' && b.weapon.rarity === 'epic' && lootSys.items.indexOf(item) < 0,
+             detail: 'targeted=' + goal + ', now carrying ' + b.weapon.rarity + ' ' + b.weapon.id };
+  });
+
+  t('bots: ride the bus, stay out of the world, then land spread out', () => {
+    const S = G.engine.services;
+    const match = S.get('match');
+    match.startMatch();
+    const onBus = bots.bots.filter((b) => b.inBus).length;
+    bots.update(1 / 60);
+    const drawnOnBus = bots.pool.mesh.count;
+    // Nobody on the bus can be hit.
+    const b0 = bots.bots[0];
+    const shootable = combat._raycastCharacters(player, b0.position.clone().add(new THREE.Vector3(0, 1, 5)),
+      new THREE.Vector3(0, 0, -1), 50);
+    for (let i = 0; i < 60 * 40; i++) bots.fixedUpdate(1 / 60);
+    // Bots fight once they land, so some may already be down: what matters is
+    // that nobody is still on the bus.
+    const stillOnBus = bots.bots.filter((b) => b.inBus).length;
+    const landed = bots.bots.filter((b) => b.alive && !b.inBus);
+    let minGap = Infinity;
+    for (let i = 0; i < landed.length; i++) {
+      for (let j = i + 1; j < landed.length; j++) {
+        minGap = Math.min(minGap, landed[i].position.distanceTo(landed[j].position));
+      }
+    }
+    const onGround = landed.every((b) => Math.abs(b.position.y - terrain.heightAt(b.position.x, b.position.z)) < 1.5);
+    match.reset();
+    return {
+      ok: onBus === bots.bots.length && drawnOnBus === 0 && !shootable && stillOnBus === 0 && onGround && minGap > 3,
+      detail: onBus + ' on the bus, ' + drawnOnBus + ' drawn, hittable=' + !!shootable + '; after 40s '
+        + stillOnBus + ' still aboard, ' + landed.length + ' standing, closest pair ' + minGap.toFixed(1) + 'm apart',
+    };
   });
 
   t('bots: the whole opposing team costs one draw call', () => {

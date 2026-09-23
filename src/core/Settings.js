@@ -72,6 +72,7 @@ const USER_DEFAULTS = {
   adaptiveResolution: true,
   leftHanded: false,
   autoSprint: true,
+  botDifficulty: 'normal',
 };
 
 const STORAGE_KEY = 'stormfall.settings.v1';

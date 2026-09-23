@@ -280,7 +280,7 @@ export class CombatSystem {
     let best = null;
     for (const t of this.targets) {
       const e = t.entity;
-      if (e === shooter || !e.alive) continue;
+      if (e === shooter || !e.alive || e.inBus) continue;
       const hit = rayCapsule(origin, dir, e.position, e.body.radius + 0.06, e.body.height, maxT);
       if (hit && (!best || hit.t < best.t)) best = { t: hit.t, y: hit.y, entity: e, target: t };
     }

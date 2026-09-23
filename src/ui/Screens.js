@@ -121,6 +121,23 @@ export class Screens {
     qualityRow.appendChild(qualityBtns);
     rows.appendChild(qualityRow);
 
+    // Opponent difficulty: sets the skill range bots are drawn from next match.
+    const diffRow = el('div', 'settings-row');
+    diffRow.appendChild(el('div', 'settings-label', '敵の強さ / Bots'));
+    const diffBtns = el('div', 'settings-choices');
+    for (const [key, label] of [['easy', 'EASY'], ['normal', 'NORMAL'], ['hard', 'HARD']]) {
+      const b = el('button', 'settings-choice', label);
+      b.classList.toggle('on', (this.settings.user.botDifficulty || 'normal') === key);
+      b.addEventListener('click', () => {
+        this.settings.set('botDifficulty', key);
+        for (const other of diffBtns.children) other.classList.remove('on');
+        b.classList.add('on');
+      });
+      diffBtns.appendChild(b);
+    }
+    diffRow.appendChild(diffBtns);
+    rows.appendChild(diffRow);
+
     this.settingsPanel.appendChild(rows);
     this.settingsBack = el('button', 'screen-btn', 'BACK');
     this.settingsPanel.appendChild(this.settingsBack);

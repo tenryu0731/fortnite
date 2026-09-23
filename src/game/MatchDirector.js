@@ -147,6 +147,8 @@ export class MatchDirector {
       Math.sin(a) * half * 1.05 + Math.sin(perp) * offset);
     this.busProgress = 0;
     this.gliding = false;
+    // Bots ride the same bus and drop along the same line.
+    this.bots.scheduleDrops(this.busStart, this.busEnd, BUS_SPEED);
 
     this._setState(MATCH.BUS);
     this.bus.queue('match:state', { state: 'bus', players: this.startingPlayers });
